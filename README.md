@@ -57,7 +57,7 @@ The Skill teaches Codex to inspect an issue, move it to `in_progress`, use optim
 
 ## Embed in Codex
 
-### Recommended: keep your current window and open a separate Taskboard window
+### Manual: use a dedicated CDP port
 
 Keep the existing Codex window open. From the Taskboard repository, start a second Codex instance with a dedicated CDP port:
 
@@ -76,15 +76,15 @@ npm run codex:inject -- --port 9231 --open
 
 Keep the injector terminal running while using the embedded panel. The original Codex window remains unchanged, and the new window receives the Taskboard sidebar entry. If port `9231` is occupied, use another port in both commands.
 
-### Alternative: restart Codex with the standalone launcher
+### Recommended: launch an independent Taskboard window with one command
 
-Quit every running Codex window, then run:
+Keep existing Codex windows open and run:
 
 ```bash
 CODEX_TASKBOARD_HOST=127.0.0.1 npm run codex
 ```
 
-This starts the local Taskboard service when needed, launches the official macOS Codex app with a loopback-only CDP port, injects a native-looking Taskboard entry after Plugins, and keeps watching both the service and replacement renderers. Opening Taskboard asks this launcher to health-check the fixed local service, restart it when needed, and rebuild a failed iframe. Keep this command running while using the embedded panel. The launcher does not modify `ChatGPT.app` or its `app.asar`.
+This starts the local Taskboard service when needed, launches the official macOS Codex app with an independent profile and loopback-only port `9231`, waits for the main renderer and sidebar, injects a native-looking Taskboard entry after Plugins, and keeps watching both the service and replacement renderers. Existing Codex windows remain unchanged. Keep this command running while using the embedded panel. The launcher does not modify `ChatGPT.app` or its `app.asar`.
 
 Codex 26.715.52143 ships a renderer CSP that blocks arbitrary HTTP iframes. The launcher therefore enables CDP CSP bypass, reloads that renderer once, installs the document-start script, and waits until the Taskboard OOPIF is actually loaded. CDP is unauthenticated to other processes on the same machine, so only run trusted local code while the launcher is active.
 

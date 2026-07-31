@@ -22,6 +22,7 @@ import { readCodexQuotaStatus } from "./codex-rate-limits.mjs";
 const injectorPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(injectorPath), "..");
 const defaultCodexDebuggingPort = 9229;
+const independentCodexProfilePath = "/private/tmp/codex-taskboard-independent-profile-v2";
 const injectionPath = path.join(projectRoot, "inject", "codex-taskboard.user.js");
 const automationPoliciesPath = path.join(projectRoot, ".data", "codex-automation-policies.json");
 const taskboardOrigin = `http://127.0.0.1:${resolvePort()}`;
@@ -184,18 +185,17 @@ function createTaskboardSupervisor({ detached }) {
   return { ensure, stop };
 }
 
-function codexIsRunning() {
-  return spawnSync("/usr/bin/pgrep", ["-x", "ChatGPT"], { stdio: "ignore" }).status === 0;
-}
-
 function launchCodex(appPath, port) {
+  const executablePath = path.join(
+    appPath,
+    "Contents",
+    "MacOS",
+    path.basename(appPath, ".app"),
+  );
   return spawn(
-    "/usr/bin/open",
+    executablePath,
     [
-      "-W",
-      "-a",
-      appPath,
-      "--args",
+      `--user-data-dir=${independentCodexProfilePath}`,
       `--remote-debugging-port=${port}`,
       `--remote-allow-origins=http://127.0.0.1:${port}`,
     ],
@@ -306,6 +306,7 @@ async function codexTargets(port) {
       target.type === "page" &&
       target.webSocketDebuggerUrl &&
       !target.url?.includes("initialRoute=%2Fglobal-dictation") &&
+      !target.url?.includes("initialRoute=%2Favatar-overlay") &&
       (target.url?.startsWith("app://") || target.title === "Codex"),
   );
 }
@@ -1099,10 +1100,12 @@ async function injectTarget(
     const reloaded = cdp.waitFor("Page.loadEventFired", 15_000);
     await cdp.send("Page.reload");
     await reloaded;
+    await cdp.send("Page.setBypassCSP", { enabled: true });
     await evaluateInjectionSource(cdp, source);
     await publishInjectionScriptIdentifier(cdp, scriptIdentifier);
     if (keepAlive) await publishHostHeartbeat(cdp, startupToken);
     if (shouldOpen) {
+      await waitForInjectionStatus(cdp, false, sourceHash, 60_000);
       await cdp.send("Runtime.evaluate", {
         expression: `(() => {
           const taskboard = window.__codexTaskboardInjection__;
@@ -1149,7 +1152,10 @@ async function injectAll(
   startupToken,
 ) {
   const targets = await codexTargets(port);
-  if (targets.length === 0) throw new Error("No Codex renderer target found");
+  if (targets.length === 0) {
+    if (keepAlive) return [];
+    throw new Error("No Codex renderer target found");
+  }
 
   const activeIds = new Set(targets.map((target) => target.id));
   for (const [id, connection] of injectedTargets) {
@@ -1243,15 +1249,14 @@ async function main() {
   const supervisor = createTaskboardSupervisor({ detached: !options.watch });
 
   try {
-    const cdpReachable = await isReachable(cdpVersionUrl);
+    let cdpReachable = await isReachable(cdpVersionUrl);
+    if (!cdpReachable && options.watch && !options.launch) {
+      await waitUntilReachable(cdpVersionUrl, 60_000);
+      cdpReachable = true;
+    }
     if (!cdpReachable) {
       if (!options.launch) {
         throw new Error(`Codex CDP is not listening on 127.0.0.1:${options.port}`);
-      }
-      if (codexIsRunning()) {
-        throw new Error(
-          "Codex is already running without this CDP port. Quit Codex completely, then run this command again.",
-        );
       }
     }
 
@@ -1277,6 +1282,7 @@ async function main() {
       options.startupToken,
     );
     console.log(JSON.stringify({ injected: firstResults }, null, 2));
+    let openPending = options.open && firstResults.length === 0;
 
     if (!options.watch) {
       codexProcess?.unref();
@@ -1308,7 +1314,7 @@ async function main() {
           options.port,
           source,
           sourceHash,
-          false,
+          openPending,
           null,
           injectedTargets,
           true,
@@ -1316,7 +1322,10 @@ async function main() {
           options.attachExisting,
           options.startupToken,
         );
-        if (results.length > 0) console.log(JSON.stringify({ injected: results }, null, 2));
+        if (results.length > 0) {
+          openPending = false;
+          console.log(JSON.stringify({ injected: results }, null, 2));
+        }
       } catch (error) {
         if (codexProcess && codexProcess.exitCode !== null) break;
         console.error(`Waiting for Codex renderer: ${error.message}`);
