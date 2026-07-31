@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DragEvent } from "react";
 import type { Task, TaskStatus } from "../types";
-import { ColumnVisibilityMenu } from "./ColumnVisibilityMenu";
 import { LinearIcon, LinearStatusIcon } from "./LinearIcon";
 import { TaskCard } from "./TaskCard";
 
@@ -10,10 +9,10 @@ export const STATUS_DETAILS: Record<
   { label: string; tone: string }
 > = {
   backlog: { label: "积压事项", tone: "backlog" },
-  todo: { label: "待办事项", tone: "todo" },
-  in_progress: { label: "进行中", tone: "progress" },
-  in_review: { label: "审核中", tone: "review" },
-  blocked: { label: "已阻塞", tone: "blocked" },
+  todo: { label: "待处理", tone: "todo" },
+  in_progress: { label: "处理中", tone: "progress" },
+  in_review: { label: "等你确认", tone: "review" },
+  blocked: { label: "遇到阻碍", tone: "blocked" },
   done: { label: "完成", tone: "done" },
   canceled: { label: "已取消", tone: "canceled" },
 };
@@ -26,6 +25,7 @@ interface BoardColumnProps {
   status: TaskStatus;
   statusIndex: number;
   tasks: Task[];
+  emptyMessage: string;
   isDropTarget: boolean;
   draggedTaskId: string | null;
   draggedTaskHeight: number;
@@ -41,13 +41,13 @@ interface BoardColumnProps {
   onDragEnter: (status: TaskStatus) => void;
   onDrop: (status: TaskStatus, taskId: string, beforeTaskId: string | null) => void;
   onOpenThread: (threadId: string) => void;
-  onHide: (status: TaskStatus) => void;
 }
 
 export function BoardColumn({
   status,
   statusIndex,
   tasks,
+  emptyMessage,
   isDropTarget,
   draggedTaskId,
   draggedTaskHeight,
@@ -63,7 +63,6 @@ export function BoardColumn({
   onDragEnter,
   onDrop,
   onOpenThread,
-  onHide,
 }: BoardColumnProps) {
   const details = STATUS_DETAILS[status];
   const [dropBeforeTaskId, setDropBeforeTaskId] = useState<string | null | undefined>();
@@ -135,14 +134,6 @@ export function BoardColumn({
           <span className="task-count" aria-label={`${tasks.length} 个议题`}>{tasks.length}</span>
         </div>
         <div className="column-actions">
-          {tasks.length > 0 && (
-            <ColumnVisibilityMenu
-              label={details.label}
-              action="hide"
-              className="icon-button column-menu"
-              onAction={() => onHide(status)}
-            />
-          )}
           <button
             type="button"
             className="icon-button add-task-button"
@@ -177,6 +168,7 @@ export function BoardColumn({
             />
           );
         })}
+        {tasks.length === 0 && <div className="column-empty">{emptyMessage}</div>}
       </div>
     </section>
   );

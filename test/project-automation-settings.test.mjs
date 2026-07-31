@@ -3,10 +3,6 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 const appSource = await readFile(new URL("../web/src/App.tsx", import.meta.url), "utf8");
-const settingsSource = await readFile(
-  new URL("../web/src/components/BoardSettingsMenu.tsx", import.meta.url),
-  "utf8",
-);
 const menuSource = await readFile(
   new URL("../web/src/components/ProjectAutomationMenu.tsx", import.meta.url),
   "utf8",
@@ -54,7 +50,6 @@ test("project mapping is based on exact ids and workspace paths, never project n
 });
 
 test("the project navigation automation menu owns the icon, fields, and accessible popover", () => {
-  assert.doesNotMatch(settingsSource, /自动认领待办|automationEnabled|automationPending/);
   assert.match(menuSource, /status === "ACTIVE" \? "play" : "pause"/);
   assert.doesNotMatch(menuSource, /statusStarted|statusTodo/);
   assert.match(menuSource, /aria-busy=\{pending/);

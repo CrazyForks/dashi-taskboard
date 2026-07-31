@@ -44,8 +44,7 @@ import {
 } from "./actors";
 import { BoardColumn, STATUS_DETAILS } from "./components/BoardColumn";
 import { AiChat } from "./components/AiChat";
-import { BoardSettingsMenu } from "./components/BoardSettingsMenu";
-import { HiddenColumns } from "./components/HiddenColumns";
+import { OtherTasksPanel } from "./components/OtherTasksPanel";
 import {
   resolveInlineMediaMarkdown,
   type PendingInlineImage,
@@ -57,6 +56,10 @@ import { TaskDetail } from "./components/TaskDetail";
 import { TaskEditor } from "./components/TaskEditor";
 import { TaskFilterMenu } from "./components/TaskFilterMenu";
 import { buildIssueUrl, readIssueIdentifier } from "./issueRoute";
+import {
+  MAIN_STATUSES,
+  type SecondaryTaskStatus,
+} from "./issueBoardStatuses";
 import { DEFAULT_LABELS } from "./labels";
 import {
   EMPTY_TASK_FILTERS,
@@ -127,7 +130,6 @@ interface UndoNotice {
   message: string;
 }
 
-type ColumnVisibilityByProject = Record<string, Partial<Record<TaskStatus, boolean>>>;
 type ProjectAutomationStatus = "ACTIVE" | "PAUSED";
 type AutomationQuotaState = "available" | "blocked" | "unknown" | "unavailable";
 type AutomationIntervalMinutes = 5 | 10 | 15 | 30 | 60;
@@ -194,8 +196,6 @@ const DEFAULT_USER_ACTOR: ActorIdentity = {
 const LAST_PROJECT_KEY = "taskboard.lastProjectId";
 const FAVORITE_PROJECTS_KEY = "taskboard.favoriteProjectIds";
 const DEVICE_WORKSPACE_PATHS_KEY = "taskboard.deviceWorkspacePaths.v1";
-const SHOW_EMPTY_COLUMNS_KEY = "taskboard.showEmptyColumns.v1";
-const COLUMN_VISIBILITY_KEY = "taskboard.columnVisibility.v1";
 const PROJECT_AUTOMATIONS_KEY = "taskboard.projectAutomations.v1";
 const DEFAULT_AUTOMATION_OPTIONS = {
   enabledByUser: false,
@@ -252,10 +252,6 @@ function readDeviceWorkspacePaths(): Record<string, string> {
   } catch {
     return {};
   }
-}
-
-function readShowEmptyColumns(): boolean {
-  return window.localStorage.getItem(SHOW_EMPTY_COLUMNS_KEY) === "true";
 }
 
 function readProjectAutomations(): ProjectAutomations {
@@ -337,26 +333,6 @@ function isAutomationIntervalMinutes(value: unknown): value is AutomationInterva
 function intervalMinutesFromRrule(value: string): AutomationIntervalMinutes | null {
   const match = /^RRULE:FREQ=MINUTELY;INTERVAL=(5|10|15|30|60)$/.exec(value);
   return match ? Number(match[1]) as AutomationIntervalMinutes : null;
-}
-
-function readColumnVisibilityByProject(): ColumnVisibilityByProject {
-  try {
-    const value = JSON.parse(window.localStorage.getItem(COLUMN_VISIBILITY_KEY) ?? "{}");
-    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-    const result: ColumnVisibilityByProject = {};
-    for (const [projectId, visibilityValue] of Object.entries(value)) {
-      if (!visibilityValue || typeof visibilityValue !== "object" || Array.isArray(visibilityValue)) continue;
-      const visibility: Partial<Record<TaskStatus, boolean>> = {};
-      for (const status of TASK_STATUSES) {
-        const visible = (visibilityValue as Record<string, unknown>)[status];
-        if (typeof visible === "boolean") visibility[status] = visible;
-      }
-      result[projectId] = visibility;
-    }
-    return result;
-  } catch {
-    return {};
-  }
 }
 
 function workspaceName(path?: string): string | null {
@@ -550,9 +526,9 @@ export function App() {
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [search, setSearch] = useState("");
   const [filters, setFilters] = useState(readTaskFilters);
-  const [showEmptyColumns, setShowEmptyColumns] = useState(readShowEmptyColumns);
-  const [columnVisibilityByProject, setColumnVisibilityByProject] = useState(readColumnVisibilityByProject);
   const [boardView, setBoardView] = useState<BoardView>("issues");
+  const [otherTasksOpen, setOtherTasksOpen] = useState(false);
+  const [otherTasksStatus, setOtherTasksStatus] = useState<SecondaryTaskStatus>("backlog");
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [detailTaskIdentifier, setDetailTaskIdentifier] = useState<string | null>(
     () => readIssueIdentifier(window.location.search),
@@ -1319,7 +1295,7 @@ export function App() {
         && boardView === "issues"
       ) {
         event.preventDefault();
-        setEditor({ task: null, status: "backlog" });
+        setEditor({ task: null, status: "todo" });
       }
       if (event.key === "/" && !detailTaskId && selectedProjectId && boardView === "issues") {
         event.preventDefault();
@@ -1341,6 +1317,7 @@ export function App() {
   }, [filters, search, tasks]);
 
   const activeFilterCount = taskFilterCount(filters);
+  const hasActiveTaskFilters = Boolean(search.trim()) || activeFilterCount > 0;
 
   const tasksByStatus = useMemo(() => {
     return Object.fromEntries(
@@ -1348,45 +1325,11 @@ export function App() {
     ) as Record<TaskStatus, Task[]>;
   }, [filteredTasks]);
 
-  const columnVisibility = columnVisibilityByProject[selectedProjectId];
-
-  const visibleStatuses = useMemo(
-    () => TASK_STATUSES.filter((status) => (
-      tasksByStatus[status].length === 0
-        ? showEmptyColumns
-        : (columnVisibility?.[status] ?? true)
-    )),
-    [columnVisibility, showEmptyColumns, tasksByStatus],
+  const mainStatuses = useMemo(
+    () => MAIN_STATUSES.filter((status) => status !== "blocked" || tasks.some((task) => task.status === "blocked")),
+    [tasks],
   );
 
-  const hiddenStatuses = useMemo(
-    () => TASK_STATUSES.filter((status) => (
-      tasksByStatus[status].length === 0
-        ? !showEmptyColumns
-        : !(columnVisibility?.[status] ?? true)
-    )),
-    [columnVisibility, showEmptyColumns, tasksByStatus],
-  );
-
-  function updateShowEmptyColumns(show: boolean) {
-    window.localStorage.setItem(SHOW_EMPTY_COLUMNS_KEY, String(show));
-    setShowEmptyColumns(show);
-  }
-
-  function updateColumnVisibility(status: TaskStatus, visible: boolean) {
-    if (!selectedProjectId || tasksByStatus[status].length === 0) return;
-    setColumnVisibilityByProject((current) => {
-      const next = {
-        ...current,
-        [selectedProjectId]: {
-          ...current[selectedProjectId],
-          [status]: visible,
-        },
-      };
-      window.localStorage.setItem(COLUMN_VISIBILITY_KEY, JSON.stringify(next));
-      return next;
-    });
-  }
 
   function selectBoardView(view: BoardView) {
     closeContextMenu();
@@ -1544,6 +1487,18 @@ export function App() {
       setDraggedTaskId(null);
       setDraggedTaskHeight(0);
     }
+  }
+
+  function startTaskDrag(task: Task, height: number) {
+    setDraggedTaskId(task.id);
+    setDraggedTaskHeight(height);
+    setDropTarget(task.status);
+  }
+
+  function endTaskDrag() {
+    setDraggedTaskId(null);
+    setDraggedTaskHeight(0);
+    setDropTarget(null);
   }
 
   function finishTaskDrop(destination: TaskStatus, taskId: string, beforeTaskId: string | null = null) {
@@ -2004,7 +1959,7 @@ export function App() {
               <button
                 className="icon-button header-create-button"
                 type="button"
-                onClick={() => setEditor({ task: null, status: "backlog" })}
+                onClick={() => setEditor({ task: null, status: "todo" })}
                 aria-label="新建议题"
                 title="新建议题 (C)"
               >
@@ -2039,6 +1994,18 @@ export function App() {
             )}
           </div>
           {boardView === "issues" && <div className="toolbar-tools">
+            <button
+              className={`other-tasks-trigger${otherTasksOpen ? " is-open" : ""}`}
+              type="button"
+              aria-controls="other-tasks-panel"
+              aria-expanded={otherTasksOpen}
+              aria-label={otherTasksOpen ? "关闭其他任务" : "打开其他任务"}
+              title="其他任务"
+              onClick={() => setOtherTasksOpen((current) => !current)}
+            >
+              <LinearIcon name="panel" />
+              <span>其他任务</span>
+            </button>
             <label className={`search-field${search ? " has-value" : ""}`} title="搜索议题 (/)" >
               <LinearIcon className="search-icon" name="search" />
               <span className="sr-only">搜索议题</span>
@@ -2057,10 +2024,6 @@ export function App() {
               labels={availableLabels}
               filters={filters}
               onChange={setFilters}
-            />
-            <BoardSettingsMenu
-              showEmptyColumns={showEmptyColumns}
-              onShowEmptyColumnsChange={updateShowEmptyColumns}
             />
             {(search || activeFilterCount > 0) && (
               <button
@@ -2212,76 +2175,67 @@ export function App() {
               onWorkflowsChange={setWorkflowOptions}
             />
           </Suspense>
-        ) : tasksLoading && !hasLoadedTasks ? (
-          <div className="loading-board" aria-label="Loading issues" aria-busy="true">
-            {TASK_STATUSES.map((status) => (
-              <div className="loading-column" key={status}>
-                <span /><div /><div />
-              </div>
-            ))}
-          </div>
         ) : (
-          <div className="board-scroll" aria-label="Issue board">
-            <div className="board">
-              {filteredTasks.length === 0 && tasks.length > 0 && !showEmptyColumns && (
-                <section className="page-empty filter-empty board-filter-empty">
-                  <span className="empty-search" aria-hidden="true"><LinearIcon name="search" /></span>
-                  <h2>没有匹配的议题</h2>
-                  <p>请更换搜索词，或移除一个筛选条件。</p>
-                  <button
-                    className="button secondary"
-                    type="button"
-                    onClick={() => { setSearch(""); setFilters(EMPTY_TASK_FILTERS); }}
-                  >
-                    清除筛选
-                  </button>
-                </section>
-              )}
-              {visibleStatuses.map((status) => (
-                <BoardColumn
-                  key={status}
-                  status={status}
-                  statusIndex={TASK_STATUSES.indexOf(status)}
-                  tasks={tasksByStatus[status]}
-                  isDropTarget={dropTarget === status}
-                  draggedTaskId={draggedTaskId}
-                  draggedTaskHeight={draggedTaskHeight}
-                  movingTaskId={movingTaskId}
-                  settlingTaskId={settlingTaskId}
-                  contextMenuTaskId={contextMenu?.taskId ?? null}
-                  onCreate={(initialStatus) => setEditor({ task: null, status: initialStatus })}
-                  onEdit={openTaskDetail}
-                  onContextMenu={(task, position) => setContextMenu({ taskId: task.id, ...position })}
-                  onMove={(task, destination) => void moveTask(task, destination)}
-                  onDragStart={(task, height) => {
-                    setDraggedTaskId(task.id);
-                    setDraggedTaskHeight(height);
-                    setDropTarget(task.status);
-                  }}
-                  onDragEnd={() => {
-                    setDraggedTaskId(null);
-                    setDraggedTaskHeight(0);
-                    setDropTarget(null);
-                  }}
-                  onDragEnter={setDropTarget}
-                  onDrop={finishTaskDrop}
-                  onOpenThread={openThread}
-                  onHide={(hiddenStatus) => updateColumnVisibility(hiddenStatus, false)}
-                />
-              ))}
-              {hiddenStatuses.length > 0 && (
-                <HiddenColumns
-                  statuses={hiddenStatuses}
-                  counts={Object.fromEntries(
-                    TASK_STATUSES.map((status) => [status, tasksByStatus[status].length]),
-                  ) as Record<TaskStatus, number>}
-                  dropTarget={dropTarget}
-                  onDragTargetChange={setDropTarget}
-                  onDrop={(destination, taskId) => finishTaskDrop(destination, taskId)}
-                  onShow={(shownStatus) => updateColumnVisibility(shownStatus, true)}
-                />
-              )}
-            </div>
+          <div className="issue-board-layout">
+            {tasksLoading && !hasLoadedTasks ? (
+              <div className="loading-board" aria-label="Loading issues" aria-busy="true">
+                {MAIN_STATUSES.filter((status) => status !== "blocked").map((status) => (
+                  <div className="loading-column" key={status}>
+                    <span /><div /><div />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <>
+                <div className="board-scroll" aria-label="Issue board">
+                  <div className="board">
+                    {mainStatuses.map((status) => (
+                      <BoardColumn
+                        key={status}
+                        status={status}
+                        statusIndex={TASK_STATUSES.indexOf(status)}
+                        tasks={tasksByStatus[status]}
+                        emptyMessage={hasActiveTaskFilters ? "当前筛选下无匹配议题" : "暂无议题"}
+                        isDropTarget={dropTarget === status}
+                        draggedTaskId={draggedTaskId}
+                        draggedTaskHeight={draggedTaskHeight}
+                        movingTaskId={movingTaskId}
+                        settlingTaskId={settlingTaskId}
+                        contextMenuTaskId={contextMenu?.taskId ?? null}
+                        onCreate={(initialStatus) => setEditor({ task: null, status: initialStatus })}
+                        onEdit={openTaskDetail}
+                        onContextMenu={(task, position) => setContextMenu({ taskId: task.id, ...position })}
+                        onMove={(task, destination) => void moveTask(task, destination)}
+                        onDragStart={startTaskDrag}
+                        onDragEnd={endTaskDrag}
+                        onDragEnter={setDropTarget}
+                        onDrop={finishTaskDrop}
+                        onOpenThread={openThread}
+                      />
+                    ))}
+                  </div>
+                </div>
+                {otherTasksOpen && (
+                  <OtherTasksPanel
+                    activeStatus={otherTasksStatus}
+                    tasksByStatus={tasksByStatus}
+                    hasActiveFilters={hasActiveTaskFilters}
+                    draggedTaskId={draggedTaskId}
+                    movingTaskId={movingTaskId}
+                    settlingTaskId={settlingTaskId}
+                    contextMenuTaskId={contextMenu?.taskId ?? null}
+                    onStatusChange={setOtherTasksStatus}
+                    onClose={() => setOtherTasksOpen(false)}
+                    onEdit={openTaskDetail}
+                    onContextMenu={(task, position) => setContextMenu({ taskId: task.id, ...position })}
+                    onMove={(task, destination) => void moveTask(task, destination)}
+                    onDragStart={startTaskDrag}
+                    onDragEnd={endTaskDrag}
+                    onOpenThread={openThread}
+                  />
+                )}
+              </>
+            )}
           </div>
         )}
       </main>

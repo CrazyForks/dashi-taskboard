@@ -86,7 +86,9 @@ test("the complete Linear-style workflow shares one ordered status source", () =
     "done",
     "canceled",
   ]);
-  assert.match(boardColumnSource, /in_review: \{ label: "审核中", tone: "review" \}/);
+  assert.match(boardColumnSource, /todo: \{ label: "待处理", tone: "todo" \}/);
+  assert.match(boardColumnSource, /in_progress: \{ label: "处理中", tone: "progress" \}/);
+  assert.match(boardColumnSource, /in_review: \{ label: "等你确认", tone: "review" \}/);
   assert.match(boardColumnSource, /blocked: \{ label: "已阻塞", tone: "blocked" \}/);
   assert.match(boardColumnSource, /canceled: \{ label: "已取消", tone: "canceled" \}/);
   assert.match(cardSource, /import \{ TASK_STATUSES,/);
