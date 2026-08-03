@@ -104,6 +104,13 @@ export interface AiChatRun {
   finishedAt?: string | null;
 }
 
+export interface AiChatTodoProgress {
+  completed: number;
+  total: number;
+  eventId: string;
+  updatedAt: string;
+}
+
 export interface AiChatThread {
   id: string;
   title: string;
@@ -116,6 +123,7 @@ export interface AiChatThread {
   createdAt: string;
   updatedAt: string;
   currentRun?: AiChatRun | null;
+  latestTodo?: AiChatTodoProgress | null;
 }
 
 export interface AiChatEvent {
@@ -192,6 +200,14 @@ export interface TaskRelations {
   related: TaskRelationSummary[];
 }
 
+export interface TaskConversationRef {
+  threadId: string;
+  source: "task" | "comment";
+  sourceId: string;
+  title: string;
+  updatedAt: string;
+}
+
 export interface Task {
   id: string;
   identifier: string;
@@ -203,6 +219,9 @@ export interface Task {
   labels: string[];
   sortOrder: number;
   threadId: string | null;
+  conversationRefs: TaskConversationRef[];
+  activityKey: string;
+  activityUpdatedAt: string;
   creatorType: ActorType;
   creatorId: string;
   creatorName: string;
@@ -253,6 +272,11 @@ export interface HostContext {
   projects?: Array<{ id: string; name: string }>;
   titlebarLeftInset?: number;
   sidebarCollapsed?: boolean;
+  threadRunning?: boolean;
+  threadTodoProgress?: {
+    completed: number;
+    total: number;
+  };
 }
 
 export interface TaskDraft {

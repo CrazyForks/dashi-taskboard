@@ -17,6 +17,7 @@ import {
 } from "../shared/domain.mjs";
 import { normalizeWorkflowSnapshot } from "../shared/workflow-control-flow.mjs";
 import { AiChatService } from "./ai-chat.mjs";
+import { resolveAiWorkspace, resolveMappedAiWorkspace } from "./ai-chat-catalog.mjs";
 import { createCloudConfigStore } from "./cloud-config.mjs";
 import {
   CloudProxyError,
@@ -1326,11 +1327,88 @@ export function createTaskboardServer(options = {}) {
       )) ?? null;
     },
   });
+  async function readCloudJson(pathname) {
+    const upstream = await cloudProxy.forward(new Request(`http://127.0.0.1${pathname}`, {
+      headers: { accept: "application/json" },
+    }));
+    let payload;
+    try {
+      payload = await upstream.json();
+    } catch {
+      throw new ApiError(
+        upstream.ok ? 502 : upstream.status,
+        "INVALID_CLOUD_RESPONSE",
+        "Cloud taskboard returned an invalid JSON response",
+      );
+    }
+    if (!upstream.ok) {
+      throw new ApiError(
+        upstream.status,
+        payload?.error?.code ?? "CLOUD_REQUEST_FAILED",
+        payload?.error?.message ?? "Cloud taskboard request failed",
+        payload?.error?.details,
+      );
+    }
+    return payload;
+  }
+
+  async function resolveAiChatContext(projectId, issueId) {
+    const config = await cloudConfig.read();
+    if (!config.remoteUrl) {
+      const resolvedWorkspace = await resolveAiWorkspace(
+        projectId,
+        resolved.codexStatePath,
+        database,
+      );
+      let issue;
+      if (issueId !== undefined) {
+        issue = database.getTask(issueId);
+        if (!issue || issue.projectId !== projectId || issue.archivedAt != null) {
+          throw new ApiError(
+            404,
+            "AI_CHAT_ISSUE_NOT_FOUND",
+            `Task '${issueId}' is not an active task in project '${projectId}'`,
+          );
+        }
+      }
+      return { ...resolvedWorkspace, issue };
+    }
+
+    const projectPayload = await readCloudJson("/api/projects");
+    const project = Array.isArray(projectPayload.projects)
+      ? projectPayload.projects.find((candidate) => candidate?.id === projectId)
+      : null;
+    if (!project) {
+      throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${projectId}' does not exist`);
+    }
+
+    let issue;
+    if (issueId !== undefined) {
+      const issuePayload = await readCloudJson(`/api/tasks/${encodeURIComponent(issueId)}`);
+      issue = issuePayload.task;
+      if (!issue || issue.projectId !== projectId || issue.archivedAt != null) {
+        throw new ApiError(
+          404,
+          "AI_CHAT_ISSUE_NOT_FOUND",
+          `Task '${issueId}' is not an active task in project '${projectId}'`,
+        );
+      }
+    }
+
+    const resolvedWorkspace = await resolveMappedAiWorkspace(
+      projectId,
+      project,
+      config.projectMappings,
+    );
+    return { ...resolvedWorkspace, issue };
+  }
+
   const aiChat = new AiChatService({
     database,
     codexExecutable: resolved.codexExecutable,
     codexStatePath: resolved.codexStatePath,
     manageTaskboardSkillPath: resolved.skillPath,
+    resolveContext: resolveAiChatContext,
   });
   const aiEventResponses = new Set();
 

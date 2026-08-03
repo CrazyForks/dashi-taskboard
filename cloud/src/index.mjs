@@ -486,6 +486,51 @@ function developmentContextFromRow(row) {
   return null;
 }
 
+function commentConversationTitle(body) {
+  const firstLine = String(body ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) return "评论";
+  const compact = firstLine.replace(/\s+/g, " ");
+  return compact.length > 80 ? `${compact.slice(0, 77)}…` : compact;
+}
+
+function attachTaskActivity(task, comments) {
+  const orderedComments = [...comments].sort((left, right) => left.id.localeCompare(right.id));
+  const conversationRefs = [];
+  if (task.threadId) {
+    conversationRefs.push({
+      threadId: task.threadId,
+      source: "task",
+      sourceId: task.id,
+      title: task.title,
+      updatedAt: task.updatedAt,
+    });
+  }
+  for (const comment of orderedComments) {
+    if (!comment.thread_id) continue;
+    conversationRefs.push({
+      threadId: comment.thread_id,
+      source: "comment",
+      sourceId: comment.id,
+      title: commentConversationTitle(comment.body),
+      updatedAt: comment.updated_at,
+    });
+  }
+  task.conversationRefs = conversationRefs;
+  task.activityKey = JSON.stringify({
+    version: 1,
+    task: [task.id, task.version, task.updatedAt],
+    comments: orderedComments.map((comment) => [comment.id, comment.version, comment.updated_at]),
+  });
+  task.activityUpdatedAt = orderedComments.reduce(
+    (latest, comment) => comment.updated_at > latest ? comment.updated_at : latest,
+    task.updatedAt,
+  );
+  return task;
+}
+
 function taskFromRow(row) {
   return {
     id: row.id,
@@ -624,7 +669,7 @@ async function hydrateComment(env, row) {
   return commentFromRow(row, await attachmentsForComment(env, row.id));
 }
 
-async function hydrateTask(env, row) {
+async function hydrateTask(env, row, activityComments = null) {
   const task = taskFromRow(row);
   const [parent, subIssues, blockedBy, blocks, related] = await Promise.all([
     env.DB.prepare(`
@@ -680,12 +725,38 @@ async function hydrateTask(env, row) {
     blocks: blocks.map(taskRelationSummaryFromRow),
     related: related.map(taskRelationSummaryFromRow),
   };
-  return task;
+  const comments = activityComments ?? await all(env.DB.prepare(`
+    SELECT id, task_id, body, thread_id, version, updated_at
+    FROM comments
+    WHERE task_id = ?
+    ORDER BY id
+  `).bind(task.id));
+  return attachTaskActivity(task, comments);
 }
 
 async function getTask(env, id) {
   const row = await taskRow(env, id);
   return row ? hydrateTask(env, row) : null;
+}
+
+async function taskActivityComments(env, taskIds) {
+  const commentsByTask = new Map(taskIds.map((taskId) => [taskId, []]));
+  const batches = [];
+  for (let offset = 0; offset < taskIds.length; offset += 80) {
+    const chunk = taskIds.slice(offset, offset + 80);
+    if (chunk.length === 0) continue;
+    const placeholders = chunk.map(() => "?").join(", ");
+    batches.push(all(env.DB.prepare(`
+      SELECT id, task_id, body, thread_id, version, updated_at
+      FROM comments
+      WHERE task_id IN (${placeholders})
+      ORDER BY task_id, id
+    `).bind(...chunk)));
+  }
+  for (const rows of await Promise.all(batches)) {
+    for (const row of rows) commentsByTask.get(row.task_id)?.push(row);
+  }
+  return commentsByTask;
 }
 
 function parseProjectCreate(body) {
@@ -1073,7 +1144,8 @@ async function listTasks(env, filters) {
         id
     `).bind(...values),
   );
-  return Promise.all(rows.map((row) => hydrateTask(env, row)));
+  const commentsByTask = await taskActivityComments(env, rows.map((row) => row.id));
+  return Promise.all(rows.map((row) => hydrateTask(env, row, commentsByTask.get(row.id) ?? [])));
 }
 
 async function createTask(env, input, actor) {

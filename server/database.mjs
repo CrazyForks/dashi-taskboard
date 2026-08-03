@@ -17,6 +17,74 @@ function now() {
   return new Date().toISOString();
 }
 
+function commentConversationTitle(body) {
+  const firstLine = String(body ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) return "评论";
+  const compact = firstLine.replace(/\s+/g, " ");
+  return compact.length > 80 ? `${compact.slice(0, 77)}…` : compact;
+}
+
+function attachTaskActivity(task, comments) {
+  const orderedComments = [...comments].sort((left, right) => (
+    left.id.localeCompare(right.id)
+  ));
+  const conversationRefs = [];
+  if (task.threadId) {
+    conversationRefs.push({
+      threadId: task.threadId,
+      source: "task",
+      sourceId: task.id,
+      title: task.title,
+      updatedAt: task.updatedAt,
+    });
+  }
+  for (const comment of orderedComments) {
+    if (!comment.thread_id) continue;
+    conversationRefs.push({
+      threadId: comment.thread_id,
+      source: "comment",
+      sourceId: comment.id,
+      title: commentConversationTitle(comment.body),
+      updatedAt: comment.updated_at,
+    });
+  }
+
+  task.conversationRefs = conversationRefs;
+  task.activityKey = JSON.stringify({
+    version: 1,
+    task: [task.id, task.version, task.updatedAt],
+    comments: orderedComments.map((comment) => [comment.id, comment.version, comment.updated_at]),
+  });
+  task.activityUpdatedAt = orderedComments.reduce(
+    (latest, comment) => comment.updated_at > latest ? comment.updated_at : latest,
+    task.updatedAt,
+  );
+  return task;
+}
+
+function parseAiChatTodoProgress(row) {
+  try {
+    const data = row.data === null ? null : JSON.parse(row.data);
+    const detail = typeof data?.detail === "string" ? JSON.parse(data.detail) : data?.detail;
+    if (!Array.isArray(detail)) return null;
+    const items = detail.filter((item) => (
+      item && typeof item === "object" && typeof item.text === "string" && item.text.trim()
+    ));
+    if (items.length === 0) return null;
+    return {
+      completed: items.filter((item) => item.completed === true).length,
+      total: items.length,
+      eventId: row.id,
+      updatedAt: row.created_at,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function taskFromRow(row) {
   const developmentContext = row.worktree_path
     ? { type: "worktree", path: row.worktree_path, branch: row.worktree_branch }
@@ -153,6 +221,7 @@ function aiChatThreadFromRow(row) {
     reasoningEffort: row.reasoning_effort,
     sandbox: row.sandbox,
     currentRun: null,
+    latestTodo: null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -678,10 +747,41 @@ export class TaskboardDatabase {
   }
 
   listAiChatThreads() {
-    return this.database.prepare(`
+    const rows = this.database.prepare(`
       SELECT * FROM ai_chat_threads
       ORDER BY updated_at DESC, id
-    `).all().map((row) => this.#aiChatThreadWithCurrentRun(row));
+    `).all();
+    if (rows.length === 0) return [];
+
+    const currentRuns = new Map();
+    for (const row of this.database.prepare(`
+      SELECT * FROM ai_chat_runs
+      WHERE status = 'running'
+      ORDER BY thread_id, started_at DESC, id DESC
+    `).all()) {
+      if (!currentRuns.has(row.thread_id)) currentRuns.set(row.thread_id, aiChatRunFromRow(row));
+    }
+
+    const latestTodos = new Map();
+    for (const row of this.database.prepare(`
+      SELECT id, thread_id, run_id, data, created_at
+      FROM ai_chat_events
+      WHERE type = 'todo_list'
+      ORDER BY thread_id, created_at DESC, rowid DESC
+    `).all()) {
+      if (latestTodos.has(row.thread_id)) continue;
+      const currentRun = currentRuns.get(row.thread_id);
+      if (currentRun && row.run_id !== currentRun.id) continue;
+      const progress = parseAiChatTodoProgress(row);
+      if (progress) latestTodos.set(row.thread_id, progress);
+    }
+
+    return rows.map((row) => {
+      const thread = aiChatThreadFromRow(row);
+      thread.currentRun = currentRuns.get(thread.id) ?? null;
+      thread.latestTodo = latestTodos.get(thread.id) ?? null;
+      return thread;
+    });
   }
 
   getAiChatThread(id) {
@@ -945,12 +1045,20 @@ export class TaskboardDatabase {
         created_at,
         id
     `;
-    return this.database.prepare(sql).all(...values).map((row) => this.#taskWithRelations(row));
+    const rows = this.database.prepare(sql).all(...values);
+    const commentsByTask = this.#commentsForTaskActivity(rows.map((row) => row.id));
+    return rows.map((row) => attachTaskActivity(
+      this.#taskWithRelations(row),
+      commentsByTask.get(row.id) ?? [],
+    ));
   }
 
   getTask(id) {
     const row = this.database.prepare("SELECT * FROM tasks WHERE id = ? OR identifier = ?").get(id, id);
-    return row ? this.#taskWithRelations(row) : null;
+    if (!row) return null;
+    const task = this.#taskWithRelations(row);
+    const comments = this.#commentsForTaskActivity([task.id]).get(task.id) ?? [];
+    return attachTaskActivity(task, comments);
   }
 
   createTask(input) {
@@ -1395,7 +1503,34 @@ export class TaskboardDatabase {
       LIMIT 1
     `).get(thread.id);
     thread.currentRun = currentRun ? aiChatRunFromRow(currentRun) : null;
+    const todoRows = this.database.prepare(`
+      SELECT id, thread_id, run_id, data, created_at
+      FROM ai_chat_events
+      WHERE thread_id = ? AND type = 'todo_list'
+      ORDER BY created_at DESC, rowid DESC
+    `).all(thread.id);
+    thread.latestTodo = todoRows
+      .filter((row) => !thread.currentRun || row.run_id === thread.currentRun.id)
+      .map(parseAiChatTodoProgress)
+      .find(Boolean) ?? null;
     return thread;
+  }
+
+  #commentsForTaskActivity(taskIds) {
+    const commentsByTask = new Map(taskIds.map((taskId) => [taskId, []]));
+    for (let offset = 0; offset < taskIds.length; offset += 400) {
+      const chunk = taskIds.slice(offset, offset + 400);
+      if (chunk.length === 0) continue;
+      const placeholders = chunk.map(() => "?").join(", ");
+      const rows = this.database.prepare(`
+        SELECT id, task_id, body, thread_id, version, updated_at
+        FROM comments
+        WHERE task_id IN (${placeholders})
+        ORDER BY task_id, id
+      `).all(...chunk);
+      for (const row of rows) commentsByTask.get(row.task_id)?.push(row);
+    }
+    return commentsByTask;
   }
 
   #attachmentsForComment(commentId) {

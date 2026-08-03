@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { labelDisplayName, labelPresentation } from "../labels";
 import {
   EMPTY_TASK_FILTERS,
   matchesTaskFilters,
@@ -26,6 +27,7 @@ import {
 } from "../types";
 import { STATUS_DETAILS } from "./BoardColumn";
 import { LinearIcon, LinearPriorityIcon, LinearStatusIcon } from "./LinearIcon";
+import { TaskboardIcon } from "./TaskboardIcon";
 
 type SubmenuName = TaskFilterKey;
 
@@ -61,14 +63,10 @@ const LINK_LABELS = {
   unlinked: "尚未由 Codex 处理",
 } as const;
 
-function labelColor(label: string): string {
-  let hash = 0;
-  for (const character of label) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
-  return `hsl(${hash % 360} 54% 55%)`;
-}
-
 function LabelGlyph({ label }: { label: string }) {
-  return <span className="filter-label-glyph" style={{ "--label-color": labelColor(label) } as CSSProperties} aria-hidden="true" />;
+  const presentation = labelPresentation(label);
+  if (!presentation.tone) return null;
+  return <span className="filter-label-glyph" style={{ "--label-color": presentation.color } as CSSProperties} aria-hidden="true" />;
 }
 
 function joinSummary(values: string[], noun: string): string | null {
@@ -177,7 +175,7 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
 
   const labelOptions = useMemo<FilterOption[]>(() => labels.map((label) => ({
     id: `label-${label}`,
-    label,
+    label: labelDisplayName(label),
     category: "标签",
     count: countFor("labels", (task) => task.labels.includes(label)),
     selected: filters.labels.includes(label),
@@ -191,7 +189,7 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
       label: LINK_LABELS.linked,
       category: "Codex 对话",
       keywords: "codex thread task 已处理",
-      count: countFor("link", (task) => Boolean(task.threadId)),
+      count: countFor("link", (task) => task.conversationRefs.length > 0),
       selected: filters.link === "linked",
       icon: <LinearIcon name="link" />,
       toggle: () => toggleLink("linked"),
@@ -201,7 +199,7 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
       label: LINK_LABELS.unlinked,
       category: "Codex 对话",
       keywords: "codex thread task 未处理",
-      count: countFor("link", (task) => !task.threadId),
+      count: countFor("link", (task) => task.conversationRefs.length === 0),
       selected: filters.link === "unlinked",
       icon: <LinearIcon name="linkOff" />,
       toggle: () => toggleLink("unlinked"),
@@ -235,7 +233,7 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
       label: "标签",
       keywords: "label tag",
       icon: <LinearIcon name="label" />,
-      summary: joinSummary(filters.labels, "标签"),
+      summary: joinSummary(filters.labels.map(labelDisplayName), "标签"),
     },
     {
       id: "link" as const,
@@ -616,7 +614,7 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
         title={activeCount ? `已启用 ${activeCount} 个筛选条件 (F)` : "筛选议题 (F)"}
         onClick={() => open ? closeMenu() : openMenu()}
       >
-        <LinearIcon name="filter" className="filter-icon" />
+        <TaskboardIcon name="filter" className="filter-icon" />
         {activeCount > 0 && <span className="task-filter-active-dot" aria-hidden="true" />}
       </button>
       {menu}

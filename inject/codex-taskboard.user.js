@@ -71,6 +71,7 @@
   let openGeneration = 0;
   let pendingThreadCreation = null;
   let lastNativeThreadId = "";
+  let lastNativeProjectId = "";
   let active = false;
   let destroyed = false;
 
@@ -385,6 +386,13 @@
       || null;
   }
 
+  async function selectedNativeProjectId() {
+    const bootstrap = await window.electronBridge?.getInitialSidebarBootstrap?.();
+    const selectedProject = bootstrap?.globalStateEntries
+      ?.find((entry) => entry.key === "selected-project")?.value;
+    return typeof selectedProject?.projectId === "string" ? selectedProject.projectId : "";
+  }
+
   function readCodexProjects() {
     const seen = new Set();
     return Array.from(document.querySelectorAll("[data-app-action-sidebar-project-row]"))
@@ -421,6 +429,9 @@
   }
 
   async function captureHostContext() {
+    const todoProgress = nativeTodoProgress();
+    const selectedProjectId = await selectedNativeProjectId();
+    if (selectedProjectId) lastNativeProjectId = selectedProjectId;
     let projects = readCodexProjects();
     let section = findProjectsSection();
     const sectionDeadline = Date.now() + 1_200;
@@ -442,7 +453,8 @@
         projects = readCodexProjects();
       } while ((projects.length === 0 || !activeThreadRow()) && Date.now() < deadline);
     }
-    const context = readHostContext(projects);
+    const context = readHostContext(projects, lastNativeProjectId);
+    if (context.threadRunning && todoProgress) context.threadTodoProgress = todoProgress;
     expandedSections.forEach((candidate) => {
       if (candidate.isConnected && candidate.getAttribute("data-app-action-sidebar-section-collapsed") === "false") {
         candidate.querySelector("[data-app-action-sidebar-section-toggle]")?.click();
@@ -480,6 +492,71 @@
   function nativeSidebarCollapsed() {
     const label = normalizedLabel(nativeSidebarTrigger()?.getAttribute("aria-label"));
     return label.startsWith("显示") || label.startsWith("show ");
+  }
+
+  function sidebarThreadRow(threadId) {
+    const normalizedThreadId = normalizeThreadId(threadId);
+    if (!normalizedThreadId) return null;
+    return Array.from(document.querySelectorAll("[data-app-action-sidebar-thread-id]"))
+      .find((candidate) => normalizeThreadId(
+        candidate.getAttribute("data-app-action-sidebar-thread-id"),
+      ) === normalizedThreadId) || null;
+  }
+
+  function nativeRunningThreadRow(preferredThreadId, preferredProjectId) {
+    const rows = Array.from(document.querySelectorAll(".sidebar-item .animate-spin"))
+      .map((spinner) => spinner.closest("[data-app-action-sidebar-thread-id]"))
+      .filter(Boolean);
+    const normalizedPreferredThreadId = normalizeThreadId(preferredThreadId);
+    if (normalizedPreferredThreadId) {
+      return rows.find((candidate) => normalizeThreadId(
+        candidate.getAttribute("data-app-action-sidebar-thread-id"),
+      ) === normalizedPreferredThreadId) || null;
+    }
+    if (preferredProjectId) {
+      const projectRows = rows.filter((candidate) => (
+        candidate.closest("[data-app-action-sidebar-project-list-id]")
+          ?.getAttribute("data-app-action-sidebar-project-list-id") === preferredProjectId
+      ));
+      if (projectRows.length === 1) return projectRows[0];
+    }
+    return rows.length === 1 ? rows[0] : null;
+  }
+
+  function nativeThreadRunning(threadId) {
+    const normalizedThreadId = normalizeThreadId(threadId);
+    const threadRow = sidebarThreadRow(normalizedThreadId);
+    if (threadRow?.querySelector(".animate-spin")) return true;
+    const running = Array.from(document.querySelectorAll("button[aria-label]")).some((button) => {
+      const label = normalizedLabel(button.getAttribute("aria-label"));
+      return ["停止", "停止生成", "stop", "stop generating"].includes(label);
+    });
+    const activeThreadId = normalizeThreadId(
+      activeThreadRow()?.getAttribute("data-app-action-sidebar-thread-id"),
+    );
+    if (running && (!normalizedThreadId || activeThreadId === normalizedThreadId)) return true;
+    if (threadRow) return false;
+    const composer = document.querySelector(
+      "[contenteditable='true'][role='textbox'], textarea",
+    );
+    return composer ? false : undefined;
+  }
+
+  function nativeTodoProgress() {
+    const indicator = Array.from(
+      document.querySelectorAll('[data-in-progress-fixed-content="true"]'),
+    ).at(-1);
+    const label = Array.from(indicator?.querySelectorAll("span") ?? [])
+      .map((element) => element.textContent?.trim() ?? "")
+      .find((text) => /\d+\s*\/\s*\d+/.test(text));
+    const match = label?.match(/(\d+)\s*\/\s*(\d+)/);
+    if (!match) return null;
+    const current = Number(match[1]);
+    const total = Number(match[2]);
+    return {
+      completed: Math.max(0, Math.min(total, current - 1)),
+      total,
+    };
   }
 
   function expandNativeSidebar() {
@@ -523,19 +600,29 @@
     };
   }
 
-  function readHostContext(projects = readCodexProjects()) {
+  function readHostContext(projects = readCodexProjects(), preferredProjectId = lastNativeProjectId) {
     const row = activeThreadRow();
     const activeThreadId = normalizeThreadId(row?.getAttribute("data-app-action-sidebar-thread-id"));
-    if (activeThreadId) lastNativeThreadId = activeThreadId;
-    const threadId = activeThreadId || lastNativeThreadId || normalizeThreadId(threadIdFromLocation());
     const projectList = row?.closest?.("[data-app-action-sidebar-project-list-id]");
     const projectRow = row?.closest?.("[data-app-action-sidebar-project-id]")
       || document.querySelector('[data-app-action-sidebar-project-row][aria-current="page"]')
       || document.querySelector('[data-app-action-sidebar-project-row][data-app-action-sidebar-project-active="true"]');
     const projectId = projectList?.getAttribute("data-app-action-sidebar-project-list-id")
       || projectRow?.getAttribute("data-app-action-sidebar-project-id")
+      || preferredProjectId
       || "";
+    const preferredThreadId = activeThreadId || lastNativeThreadId;
+    const runningThreadId = normalizeThreadId(
+      nativeRunningThreadRow(preferredThreadId, projectId)
+        ?.getAttribute("data-app-action-sidebar-thread-id"),
+    );
+    const currentThreadId = activeThreadId || runningThreadId || lastNativeThreadId;
+    if (activeThreadId || (!lastNativeThreadId && runningThreadId)) {
+      lastNativeThreadId = currentThreadId;
+    }
+    const threadId = currentThreadId || lastNativeThreadId || normalizeThreadId(threadIdFromLocation());
     const workspacePath = workspaceFromLocation();
+    const threadRunning = nativeThreadRunning(threadId);
     const payload = {
       theme: currentTheme(),
       projects,
@@ -543,6 +630,11 @@
       titlebarLeftInset: titlebarLeftInset(),
       sidebarCollapsed: nativeSidebarCollapsed(),
     };
+    if (threadRunning !== undefined) payload.threadRunning = threadRunning;
+    if (threadRunning) {
+      const todoProgress = nativeTodoProgress();
+      if (todoProgress) payload.threadTodoProgress = todoProgress;
+    }
     if (workspacePath) payload.workspacePath = workspacePath;
     if (projectId) payload.projectId = projectId;
     if (threadId) payload.threadId = threadId;
@@ -1084,7 +1176,13 @@
         captureHostContext(),
       ]);
       if (!active || generation !== openGeneration) return;
-      hostContextSnapshot = context;
+      hostContextSnapshot = {
+        ...hostContextSnapshot,
+        ...context,
+        projects: context.projects.length > 0
+          ? context.projects
+          : hostContextSnapshot?.projects ?? [],
+      };
       if (!frameReady || result.restarted || !frameMatchesTaskboardUrl(taskboardUrl)) {
         showLoading();
         loadTaskboardFrame();
@@ -1150,7 +1248,7 @@
     if (destroyed) return;
     if (!active) {
       lastFocusedElement = document.activeElement;
-      hostContextSnapshot = null;
+      hostContextSnapshot = readHostContext();
     }
     const generation = ++openGeneration;
     active = true;

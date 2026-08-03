@@ -1,30 +1,38 @@
 import { useEffect, useState } from "react";
 import type { DragEvent } from "react";
 import type { Task, TaskStatus } from "../types";
-import { LinearIcon, LinearStatusIcon } from "./LinearIcon";
+import type { TaskCardPresentation, TaskConversationItem } from "../taskConversations";
 import { TaskCard } from "./TaskCard";
+import { TaskboardIcon, type TaskboardIconName } from "./TaskboardIcon";
 
 export const STATUS_DETAILS: Record<
   TaskStatus,
   { label: string; tone: string }
 > = {
-  backlog: { label: "积压事项", tone: "backlog" },
-  todo: { label: "待处理", tone: "todo" },
+  backlog: { label: "待立项", tone: "backlog" },
+  todo: { label: "等待认领", tone: "todo" },
   in_progress: { label: "处理中", tone: "progress" },
   in_review: { label: "等你确认", tone: "review" },
   blocked: { label: "遇到阻碍", tone: "blocked" },
   done: { label: "完成", tone: "done" },
-  canceled: { label: "已取消", tone: "canceled" },
+  canceled: { label: "取消", tone: "canceled" },
 };
 
 export function StatusIcon({ status }: { status: TaskStatus }) {
-  return <LinearStatusIcon status={status} />;
+  const icon: Partial<Record<TaskStatus, TaskboardIconName>> = {
+    todo: "statusTodo",
+    in_progress: "statusProgress",
+    in_review: "statusReview",
+    blocked: "statusBlocked",
+  };
+  return icon[status] ? <TaskboardIcon name={icon[status]} /> : null;
 }
 
 interface BoardColumnProps {
   status: TaskStatus;
-  statusIndex: number;
   tasks: Task[];
+  presentations: Record<string, TaskCardPresentation>;
+  now: number;
   emptyMessage: string;
   isDropTarget: boolean;
   draggedTaskId: string | null;
@@ -35,18 +43,18 @@ interface BoardColumnProps {
   onCreate: (status: TaskStatus) => void;
   onEdit: (task: Task) => void;
   onContextMenu: (task: Task, position: { x: number; y: number }) => void;
-  onMove: (task: Task, status: TaskStatus) => void;
   onDragStart: (task: Task, height: number) => void;
   onDragEnd: () => void;
   onDragEnter: (status: TaskStatus) => void;
   onDrop: (status: TaskStatus, taskId: string, beforeTaskId: string | null) => void;
-  onOpenThread: (threadId: string) => void;
+  onOpenConversation: (conversation: TaskConversationItem) => void;
 }
 
 export function BoardColumn({
   status,
-  statusIndex,
   tasks,
+  presentations,
+  now,
   emptyMessage,
   isDropTarget,
   draggedTaskId,
@@ -57,12 +65,11 @@ export function BoardColumn({
   onCreate,
   onEdit,
   onContextMenu,
-  onMove,
   onDragStart,
   onDragEnd,
   onDragEnter,
   onDrop,
-  onOpenThread,
+  onOpenConversation,
 }: BoardColumnProps) {
   const details = STATUS_DETAILS[status];
   const [dropBeforeTaskId, setDropBeforeTaskId] = useState<string | null | undefined>();
@@ -141,7 +148,7 @@ export function BoardColumn({
             aria-label={`在${details.label}中新建议题`}
             title={`添加到${details.label}`}
           >
-            <LinearIcon name="plus" />
+            <TaskboardIcon name="columnAdd" />
           </button>
         </div>
       </header>
@@ -153,7 +160,8 @@ export function BoardColumn({
             <TaskCard
               key={task.id}
               task={task}
-              statusIndex={statusIndex}
+              presentation={presentations[task.id]}
+              now={now}
               isDragging={draggedTaskId === task.id}
               dragShift={dragShift}
               isMoving={movingTaskId === task.id}
@@ -161,10 +169,9 @@ export function BoardColumn({
               isContextMenuOpen={contextMenuTaskId === task.id}
               onEdit={onEdit}
               onContextMenu={onContextMenu}
-              onMove={onMove}
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}
-              onOpenThread={onOpenThread}
+              onOpenConversation={onOpenConversation}
             />
           );
         })}

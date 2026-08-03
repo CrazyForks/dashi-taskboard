@@ -51,11 +51,19 @@ import type {
   AiChatThreadSnapshot,
 } from "../types";
 import { LinearIcon, type LinearIconName } from "./LinearIcon";
+import { TaskboardIcon } from "./TaskboardIcon";
+
+export interface AiChatOpenThreadRequest {
+  threadId: string;
+  requestId: number;
+}
 
 interface AiChatProps {
   available: boolean;
   projectId: string | null;
   issueId: string | null;
+  onThreadsChange?: (threads: AiChatThread[]) => void;
+  openThreadRequest?: AiChatOpenThreadRequest | null;
 }
 
 type MenuName = "model" | "model-list" | "effort-list" | "sandbox" | null;
@@ -943,7 +951,13 @@ function OptionMenu({
   );
 }
 
-export function AiChat({ available, projectId, issueId }: AiChatProps) {
+export function AiChat({
+  available,
+  projectId,
+  issueId,
+  onThreadsChange,
+  openThreadRequest,
+}: AiChatProps) {
   const [panelOpen, setPanelOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [menu, setMenu] = useState<MenuName>(null);
@@ -985,6 +999,7 @@ export function AiChat({ available, projectId, issueId }: AiChatProps) {
   const panelRef = useRef<HTMLElement>(null);
   const panelResizeSessionRef = useRef<PanelResizeSession | null>(null);
   const selectedThreadRef = useRef(selectedThreadId);
+  const handledOpenThreadRequestRef = useRef<number | null>(null);
   const draftReturnThreadIdRef = useRef<string | null>(null);
   const panelOpenRef = useRef(panelOpen);
   const snapshotRequestRef = useRef(0);
@@ -1192,10 +1207,15 @@ export function AiChat({ available, projectId, issueId }: AiChatProps) {
   useEffect(() => {
     if (!available) {
       setPanelOpen(false);
+      setThreads([]);
       return;
     }
     void loadThreads();
   }, [available, loadThreads]);
+
+  useEffect(() => {
+    onThreadsChange?.(available ? threads : []);
+  }, [available, onThreadsChange, threads]);
 
   useEffect(() => {
     setSnapshot(null);
@@ -1420,6 +1440,38 @@ export function AiChat({ available, projectId, issueId }: AiChatProps) {
     setAttachmentDragActive(false);
     skillMentionRangeRef.current = null;
   }
+
+  useEffect(() => {
+    if (!available || !openThreadRequest) return;
+    if (handledOpenThreadRequestRef.current === openThreadRequest.requestId) return;
+    if (!threads.some((thread) => thread.id === openThreadRequest.threadId)) return;
+    handledOpenThreadRequestRef.current = openThreadRequest.requestId;
+    const selectedChanged = selectedThreadRef.current !== openThreadRequest.threadId;
+    const leavingDraft = draftOrigin !== null;
+    draftReturnThreadIdRef.current = null;
+    setDraftOrigin(null);
+    if (selectedChanged || leavingDraft) {
+      setSnapshot(null);
+      resetComposer();
+    }
+    selectThread(openThreadRequest.threadId);
+    if (!selectedChanged && (leavingDraft || snapshot?.thread.id !== openThreadRequest.threadId)) {
+      void loadSnapshot(openThreadRequest.threadId);
+    }
+    setHistoryOpen(false);
+    setMenu(null);
+    setError(null);
+    setPanelOpen(true);
+  }, [
+    available,
+    draftOrigin,
+    loadSnapshot,
+    openThreadRequest?.requestId,
+    openThreadRequest?.threadId,
+    selectThread,
+    snapshot?.thread.id,
+    threads,
+  ]);
 
   function restorePersistedConversationFromDraft() {
     if (!draftOrigin) return;
@@ -1785,10 +1837,15 @@ export function AiChat({ available, projectId, issueId }: AiChatProps) {
       observedRunStatusesRef.current.set(run.id, run.status);
       setSnapshot((current) => current?.thread.id === thread.id ? {
           ...current,
-          thread: { ...current.thread, status: "running", currentRun: run },
+          thread: {
+            ...current.thread,
+            status: "running",
+            currentRun: run,
+            latestTodo: null,
+          },
           runs: [run, ...current.runs.filter((candidate) => candidate.id !== run.id)],
         } : current);
-      replaceThread({ ...thread, status: "running", currentRun: run });
+      replaceThread({ ...thread, status: "running", currentRun: run, latestTodo: null });
       if (selectedThreadRef.current === thread.id) {
         void selectedHintRefreshQueue.request(thread.id);
       }
@@ -2541,7 +2598,7 @@ export function AiChat({ available, projectId, issueId }: AiChatProps) {
           title="AI 对话"
           onClick={() => setPanelOpen(true)}
         >
-          <LinearIcon name="conversation" />
+          <TaskboardIcon name="aiLauncher" />
           {launcherState !== "idle" && <span className="ai-chat-launcher-state" aria-hidden="true" />}
         </button>
       )}

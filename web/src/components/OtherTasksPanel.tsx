@@ -1,5 +1,5 @@
 import type { Task, TaskStatus } from "../types";
-import { TASK_STATUSES } from "../types";
+import type { TaskCardPresentation, TaskConversationItem } from "../taskConversations";
 import {
   SECONDARY_STATUSES,
   type SecondaryTaskStatus,
@@ -7,41 +7,44 @@ import {
 import { STATUS_DETAILS } from "./BoardColumn";
 import { LinearIcon } from "./LinearIcon";
 import { TaskCard } from "./TaskCard";
+import { TaskboardIcon } from "./TaskboardIcon";
 
 interface OtherTasksPanelProps {
   activeStatus: SecondaryTaskStatus;
   tasksByStatus: Record<TaskStatus, Task[]>;
+  presentations: Record<string, TaskCardPresentation>;
+  now: number;
   hasActiveFilters: boolean;
   draggedTaskId: string | null;
   movingTaskId: string | null;
   settlingTaskId: string | null;
   contextMenuTaskId: string | null;
   onStatusChange: (status: SecondaryTaskStatus) => void;
-  onClose: () => void;
+  onCreate: (status: SecondaryTaskStatus) => void;
   onEdit: (task: Task) => void;
   onContextMenu: (task: Task, position: { x: number; y: number }) => void;
-  onMove: (task: Task, status: TaskStatus) => void;
   onDragStart: (task: Task, height: number) => void;
   onDragEnd: () => void;
-  onOpenThread: (threadId: string) => void;
+  onOpenConversation: (conversation: TaskConversationItem) => void;
 }
 
 export function OtherTasksPanel({
   activeStatus,
   tasksByStatus,
+  presentations,
+  now,
   hasActiveFilters,
   draggedTaskId,
   movingTaskId,
   settlingTaskId,
   contextMenuTaskId,
   onStatusChange,
-  onClose,
+  onCreate,
   onEdit,
   onContextMenu,
-  onMove,
   onDragStart,
   onDragEnd,
-  onOpenThread,
+  onOpenConversation,
 }: OtherTasksPanelProps) {
   const tasks = tasksByStatus[activeStatus];
 
@@ -49,24 +52,8 @@ export function OtherTasksPanel({
     <aside
       className="other-tasks-panel"
       id="other-tasks-panel"
-      aria-labelledby="other-tasks-heading"
+      aria-label="其他任务"
     >
-      <header className="other-tasks-header">
-        <div className="other-tasks-heading">
-          <LinearIcon name="panel" />
-          <h2 id="other-tasks-heading">其他任务</h2>
-        </div>
-        <button
-          className="icon-button other-tasks-close"
-          type="button"
-          aria-label="关闭其他任务"
-          title="关闭其他任务"
-          onClick={onClose}
-        >
-          <LinearIcon name="close" />
-        </button>
-      </header>
-
       <div className="other-tasks-tabs" role="tablist" aria-label="其他任务状态">
         {SECONDARY_STATUSES.map((status) => {
           const details = STATUS_DETAILS[status];
@@ -92,6 +79,16 @@ export function OtherTasksPanel({
         })}
       </div>
 
+      <button
+        className="other-tasks-add"
+        type="button"
+        aria-label={`在${STATUS_DETAILS[activeStatus].label}中新建议题`}
+        title={`添加到${STATUS_DETAILS[activeStatus].label}`}
+        onClick={() => onCreate(activeStatus)}
+      >
+        <TaskboardIcon name="sidebarAdd" />
+      </button>
+
       <div
         className="other-tasks-list"
         id="other-tasks-list"
@@ -102,7 +99,9 @@ export function OtherTasksPanel({
           <TaskCard
             key={task.id}
             task={task}
-            statusIndex={TASK_STATUSES.indexOf(task.status)}
+            variant="sidebar"
+            presentation={presentations[task.id]}
+            now={now}
             isDragging={draggedTaskId === task.id}
             dragShift={0}
             isMoving={movingTaskId === task.id}
@@ -110,10 +109,9 @@ export function OtherTasksPanel({
             isContextMenuOpen={contextMenuTaskId === task.id}
             onEdit={onEdit}
             onContextMenu={onContextMenu}
-            onMove={onMove}
             onDragStart={onDragStart}
             onDragEnd={onDragEnd}
-            onOpenThread={onOpenThread}
+            onOpenConversation={onOpenConversation}
           />
         ))}
         {tasks.length === 0 && (

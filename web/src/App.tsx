@@ -43,7 +43,7 @@ import {
   assigneeTargetForActor,
 } from "./actors";
 import { BoardColumn, STATUS_DETAILS } from "./components/BoardColumn";
-import { AiChat } from "./components/AiChat";
+import { AiChat, type AiChatOpenThreadRequest } from "./components/AiChat";
 import { OtherTasksPanel } from "./components/OtherTasksPanel";
 import {
   resolveInlineMediaMarkdown,
@@ -51,6 +51,7 @@ import {
 } from "./components/InlineMediaComposer";
 import { LinearIcon } from "./components/LinearIcon";
 import { ProjectAutomationMenu } from "./components/ProjectAutomationMenu";
+import { TaskboardIcon } from "./components/TaskboardIcon";
 import { TaskContextMenu } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
 import { TaskEditor } from "./components/TaskEditor";
@@ -62,6 +63,11 @@ import {
 } from "./issueBoardStatuses";
 import { DEFAULT_LABELS } from "./labels";
 import {
+  taskCardPresentation,
+  type TaskCardPresentation,
+  type TaskConversationItem,
+} from "./taskConversations";
+import {
   EMPTY_TASK_FILTERS,
   matchesTaskFilters,
   matchesTaskSearch,
@@ -72,6 +78,7 @@ import {
 import {
   TASK_STATUSES,
   type ActorIdentity,
+  type AiChatThread,
   type DevelopmentScan,
   type HostContext,
   type IssueRelationType,
@@ -194,9 +201,9 @@ const DEFAULT_USER_ACTOR: ActorIdentity = {
 };
 
 const LAST_PROJECT_KEY = "taskboard.lastProjectId";
-const FAVORITE_PROJECTS_KEY = "taskboard.favoriteProjectIds";
 const DEVICE_WORKSPACE_PATHS_KEY = "taskboard.deviceWorkspacePaths.v1";
 const PROJECT_AUTOMATIONS_KEY = "taskboard.projectAutomations.v1";
+const ISSUE_READ_KEY_PREFIX = "taskboard.issue-read.v1";
 const DEFAULT_AUTOMATION_OPTIONS = {
   enabledByUser: false,
   quotaAware: false,
@@ -204,6 +211,18 @@ const DEFAULT_AUTOMATION_OPTIONS = {
   model: "gpt-5.5",
   reasoningEffort: "high",
 } as const;
+
+function readIssueActivityKeys(storageKey: string): Record<string, string> {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(storageKey) ?? "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => (
+      typeof entry[0] === "string" && typeof entry[1] === "string"
+    )));
+  } catch {
+    return {};
+  }
+}
 
 const EVENT_NAMES = [
   "task.created",
@@ -231,15 +250,6 @@ function getInitialTheme(): Theme {
   const stored = window.localStorage.getItem("taskboard.theme");
   if (isTheme(stored)) return stored;
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-
-function readFavoriteProjectIds(): Set<string> {
-  try {
-    const value = JSON.parse(window.localStorage.getItem(FAVORITE_PROJECTS_KEY) ?? "[]");
-    return new Set(Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
-  } catch {
-    return new Set();
-  }
 }
 
 function readDeviceWorkspacePaths(): Record<string, string> {
@@ -515,6 +525,10 @@ export function App() {
   const [manageTaskboardSkillPath, setManageTaskboardSkillPath] = useState("");
   const [taskboardMetadata, setTaskboardMetadata] = useState<TaskboardMetadata | null>(null);
   const [localAiChatAvailable, setLocalAiChatAvailable] = useState(false);
+  const [aiThreads, setAiThreads] = useState<AiChatThread[]>([]);
+  const [aiOpenThreadRequest, setAiOpenThreadRequest] = useState<AiChatOpenThreadRequest | null>(null);
+  const [readActivityKeys, setReadActivityKeys] = useState<Record<string, string>>({});
+  const [processingNow, setProcessingNow] = useState(() => Date.now());
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -546,7 +560,6 @@ export function App() {
   const [openingProjectId, setOpeningProjectId] = useState<string | null>(null);
   const [openingThreadTaskId, setOpeningThreadTaskId] = useState<string | null>(null);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
-  const [favoriteProjectIds, setFavoriteProjectIds] = useState(readFavoriteProjectIds);
   const [deviceWorkspacePaths, setDeviceWorkspacePaths] = useState(readDeviceWorkspacePaths);
   const [projectAutomations, setProjectAutomations] = useState(readProjectAutomations);
   const [automationPending, setAutomationPending] = useState(false);
@@ -668,10 +681,8 @@ export function App() {
         persisted: true,
       });
     }
-    return choices.sort((left, right) => (
-      Number(favoriteProjectIds.has(right.id)) - Number(favoriteProjectIds.has(left.id))
-    ));
-  }, [favoriteProjectIds, hostContext?.projects, projects]);
+    return choices;
+  }, [hostContext?.projects, projects]);
   const projectsWithIssues = useMemo(
     () => projectChoices.filter((project) => project.issueCount > 0),
     [projectChoices],
@@ -681,6 +692,31 @@ export function App() {
     [projectChoices],
   );
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+  const issueReadStorageKey = selectedProjectId
+    ? `${ISSUE_READ_KEY_PREFIX}:${taskboardMetadata?.mode ?? "local"}:${selectedProjectId}`
+    : null;
+
+  useEffect(() => {
+    setReadActivityKeys(issueReadStorageKey ? readIssueActivityKeys(issueReadStorageKey) : {});
+  }, [issueReadStorageKey]);
+
+  const markTaskRead = useCallback((task: Task) => {
+    if (!issueReadStorageKey || !task.activityKey) return;
+    setReadActivityKeys((current) => {
+      if (current[task.id] === task.activityKey) return current;
+      const next = { ...current, [task.id]: task.activityKey };
+      try {
+        window.localStorage.setItem(issueReadStorageKey, JSON.stringify(next));
+      } catch {
+        // Read state remains valid for this page even when browser persistence is unavailable.
+      }
+      return next;
+    });
+  }, [issueReadStorageKey]);
+
+  useEffect(() => {
+    if (detailTask) markTaskRead(detailTask);
+  }, [detailTask?.activityKey, detailTask?.id, markTaskRead]);
 
   const writeProjectAutomation = useCallback((
     projectId: string,
@@ -889,6 +925,8 @@ export function App() {
   ]);
 
   function openTaskDetail(task: Pick<Task, "identifier" | "projectId">) {
+    const fullTask = tasksRef.current.find((candidate) => candidate.identifier === task.identifier);
+    if (fullTask) markTaskRead(fullTask);
     closeContextMenu();
     setProjectMenuOpen(false);
     setDetailTaskIdentifier(task.identifier);
@@ -1330,6 +1368,39 @@ export function App() {
     [tasks],
   );
 
+  const taskPresentations = useMemo(() => Object.fromEntries(tasks.map((task) => {
+    const unread = (task.status === "in_review" || task.status === "blocked")
+      && readActivityKeys[task.id] !== task.activityKey;
+    const runningNativeThreadId = hostContext?.threadRunning
+      ? hostContext.threadId ?? null
+      : null;
+    return [task.id, taskCardPresentation(
+      task,
+      aiThreads,
+      unread,
+      runningNativeThreadId,
+      hostContext?.threadTodoProgress ?? null,
+    )];
+  })) as Record<string, TaskCardPresentation>, [
+    aiThreads,
+    hostContext?.threadId,
+    hostContext?.threadRunning,
+    hostContext?.threadTodoProgress,
+    readActivityKeys,
+    tasks,
+  ]);
+  const hasRunningTask = useMemo(
+    () => Object.values(taskPresentations).some((presentation) => presentation.processing.running),
+    [taskPresentations],
+  );
+
+  useEffect(() => {
+    setProcessingNow(Date.now());
+    if (!hasRunningTask) return;
+    const timer = window.setInterval(() => setProcessingNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [hasRunningTask]);
+
 
   function selectBoardView(view: BoardView) {
     closeContextMenu();
@@ -1637,6 +1708,17 @@ export function App() {
     window.location.assign(`codex://threads/${encodeURIComponent(threadId.trim())}`);
   }
 
+  function openTaskConversation(conversation: TaskConversationItem) {
+    if (conversation.kind === "local-ai" && conversation.aiThreadId) {
+      setAiOpenThreadRequest((current) => ({
+        threadId: conversation.aiThreadId!,
+        requestId: (current?.requestId ?? 0) + 1,
+      }));
+      return;
+    }
+    if (conversation.nativeThreadId) openThread(conversation.nativeThreadId);
+  }
+
   function expandCodexSidebar() {
     if (!embedded || window.parent === window) return;
     window.parent.postMessage({ type: "taskboard:expand-sidebar" }, "*");
@@ -1717,19 +1799,6 @@ export function App() {
     void loadProjectList();
   }
 
-  function toggleFavoriteProject() {
-    if (!selectedProjectId) return;
-    const shouldFavorite = !favoriteProjectIds.has(selectedProjectId);
-    setFavoriteProjectIds((current) => {
-      const next = new Set(current);
-      if (shouldFavorite) next.add(selectedProjectId);
-      else next.delete(selectedProjectId);
-      window.localStorage.setItem(FAVORITE_PROJECTS_KEY, JSON.stringify([...next]));
-      return next;
-    });
-    setAnnouncement(`${selectedProject?.name ?? "项目"}${shouldFavorite ? "已收藏。" : "已取消收藏。"}`);
-  }
-
   async function selectProject(choice: ProjectChoice) {
     if (openingProjectId) return;
     setOpeningProjectId(choice.id);
@@ -1760,7 +1829,6 @@ export function App() {
     }
   }
 
-  const contextName = workspaceName(hostContext?.workspacePath);
   const headerProjectName = selectedProject?.name ?? "任务面板";
   const appShellStyle = embedded
     ? { "--codex-titlebar-left-inset": `${hostContext?.titlebarLeftInset ?? 0}px` } as CSSProperties
@@ -1867,11 +1935,10 @@ export function App() {
                   title="返回项目首页"
                   onClick={returnToProjectHome}
                 >
-                  <LinearIcon name="home" />
-                  <span>首页</span>
+                  <TaskboardIcon name="home" />
                 </button>
               )}
-              {selectedProjectId && <span className="breadcrumb-chevron" aria-hidden="true"><LinearIcon name="chevronRight" /></span>}
+              {selectedProjectId && <span className="breadcrumb-chevron" aria-hidden="true"><TaskboardIcon name="breadcrumb" /></span>}
               {selectedProjectId ? (
                 <div className="header-project-switcher" data-project-switcher>
                   <button
@@ -1882,11 +1949,8 @@ export function App() {
                     aria-expanded={projectMenuOpen}
                     onClick={() => setProjectMenuOpen((current) => !current)}
                   >
-                    <span className="project-avatar" aria-hidden="true">
-                      {headerProjectName.slice(0, 1).toUpperCase()}
-                    </span>
                     <span className="project-name">{headerProjectName}</span>
-                    <LinearIcon className="project-switcher-chevron" name="chevronDown" />
+                    <TaskboardIcon className="project-switcher-chevron" name="dropdown" />
                   </button>
                   {projectMenuOpen && (
                     <div className="header-project-menu" role="menu" aria-label="项目">
@@ -1905,7 +1969,6 @@ export function App() {
                         >
                           <span className="project-avatar" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span>
                           <span>{project.name}</span>
-                          {favoriteProjectIds.has(project.id) && <span className="project-menu-favorite" aria-label="已收藏"><LinearIcon name="favorite" /></span>}
                           {project.id === selectedProjectId && <span className="project-menu-check" aria-hidden="true"><LinearIcon name="check" /></span>}
                         </button>
                       ))}
@@ -1926,19 +1989,7 @@ export function App() {
                   <strong>项目</strong>
                 </>
               )}
-              {!detailTask && selectedProjectId && (
-                <button
-                  className={`favorite-button${favoriteProjectIds.has(selectedProjectId) ? " active" : ""}`}
-                  type="button"
-                  aria-label={favoriteProjectIds.has(selectedProjectId) ? "取消收藏项目" : "收藏项目"}
-                  aria-pressed={favoriteProjectIds.has(selectedProjectId)}
-                  title={favoriteProjectIds.has(selectedProjectId) ? "取消收藏" : "收藏项目"}
-                  onClick={toggleFavoriteProject}
-                >
-                  <LinearIcon className="favorite-icon" name="favorite" />
-                </button>
-              )}
-              {!detailTask && selectedProjectId && embedded && contextName && <span className="codex-context">{contextName}</span>}
+
             </div>
           </div>
 
@@ -1963,7 +2014,7 @@ export function App() {
                 aria-label="新建议题"
                 title="新建议题 (C)"
               >
-                <LinearIcon name="plus" />
+                <TaskboardIcon name="create" />
               </button>
             )}
           </div>
@@ -1994,20 +2045,8 @@ export function App() {
             )}
           </div>
           {boardView === "issues" && <div className="toolbar-tools">
-            <button
-              className={`other-tasks-trigger${otherTasksOpen ? " is-open" : ""}`}
-              type="button"
-              aria-controls="other-tasks-panel"
-              aria-expanded={otherTasksOpen}
-              aria-label={otherTasksOpen ? "关闭其他任务" : "打开其他任务"}
-              title="其他任务"
-              onClick={() => setOtherTasksOpen((current) => !current)}
-            >
-              <LinearIcon name="panel" />
-              <span>其他任务</span>
-            </button>
             <label className={`search-field${search ? " has-value" : ""}`} title="搜索议题 (/)" >
-              <LinearIcon className="search-icon" name="search" />
+              <TaskboardIcon className="search-icon" name="search" />
               <span className="sr-only">搜索议题</span>
               <input
                 id="task-search"
@@ -2025,17 +2064,17 @@ export function App() {
               filters={filters}
               onChange={setFilters}
             />
-            {(search || activeFilterCount > 0) && (
-              <button
-                className="clear-filter"
-                type="button"
-                aria-label="清除筛选"
-                title="清除筛选"
-                onClick={() => { setSearch(""); setFilters(EMPTY_TASK_FILTERS); }}
-              >
-                <LinearIcon name="close" />
-              </button>
-            )}
+            <button
+              className={`other-tasks-trigger${otherTasksOpen ? " is-open" : ""}`}
+              type="button"
+              aria-controls="other-tasks-panel"
+              aria-expanded={otherTasksOpen}
+              aria-label={otherTasksOpen ? "关闭其他任务" : "打开其他任务"}
+              title="其他任务"
+              onClick={() => setOtherTasksOpen((current) => !current)}
+            >
+              <TaskboardIcon name="panel" />
+            </button>
           </div>}
         </div>}
 
@@ -2098,7 +2137,6 @@ export function App() {
                                   {project.issueCount > 0 ? ` · ${project.issueCount} 个议题` : ""}
                                 </span>
                               </span>
-                              {favoriteProjectIds.has(project.id) && <span className="project-card-favorite" aria-label="已收藏"><LinearIcon name="favorite" /></span>}
                               <span className="project-card-action" aria-hidden="true">
                                 {openingProjectId === project.id ? "正在打开…" : <LinearIcon name="chevronRight" />}
                               </span>
@@ -2176,7 +2214,13 @@ export function App() {
             />
           </Suspense>
         ) : (
-          <div className="issue-board-layout">
+          <div
+            className={`issue-board-layout${otherTasksOpen ? " has-other-tasks" : ""}`}
+            style={{
+              "--main-column-count": mainStatuses.length,
+              "--layout-column-count": mainStatuses.length + (otherTasksOpen ? 1 : 0),
+            } as CSSProperties}
+          >
             {tasksLoading && !hasLoadedTasks ? (
               <div className="loading-board" aria-label="Loading issues" aria-busy="true">
                 {MAIN_STATUSES.filter((status) => status !== "blocked").map((status) => (
@@ -2193,8 +2237,9 @@ export function App() {
                       <BoardColumn
                         key={status}
                         status={status}
-                        statusIndex={TASK_STATUSES.indexOf(status)}
                         tasks={tasksByStatus[status]}
+                        presentations={taskPresentations}
+                        now={processingNow}
                         emptyMessage={hasActiveTaskFilters ? "当前筛选下无匹配议题" : "暂无议题"}
                         isDropTarget={dropTarget === status}
                         draggedTaskId={draggedTaskId}
@@ -2205,12 +2250,11 @@ export function App() {
                         onCreate={(initialStatus) => setEditor({ task: null, status: initialStatus })}
                         onEdit={openTaskDetail}
                         onContextMenu={(task, position) => setContextMenu({ taskId: task.id, ...position })}
-                        onMove={(task, destination) => void moveTask(task, destination)}
                         onDragStart={startTaskDrag}
                         onDragEnd={endTaskDrag}
                         onDragEnter={setDropTarget}
                         onDrop={finishTaskDrop}
-                        onOpenThread={openThread}
+                        onOpenConversation={openTaskConversation}
                       />
                     ))}
                   </div>
@@ -2219,19 +2263,20 @@ export function App() {
                   <OtherTasksPanel
                     activeStatus={otherTasksStatus}
                     tasksByStatus={tasksByStatus}
+                    presentations={taskPresentations}
+                    now={processingNow}
                     hasActiveFilters={hasActiveTaskFilters}
                     draggedTaskId={draggedTaskId}
                     movingTaskId={movingTaskId}
                     settlingTaskId={settlingTaskId}
                     contextMenuTaskId={contextMenu?.taskId ?? null}
                     onStatusChange={setOtherTasksStatus}
-                    onClose={() => setOtherTasksOpen(false)}
+                    onCreate={(initialStatus) => setEditor({ task: null, status: initialStatus })}
                     onEdit={openTaskDetail}
                     onContextMenu={(task, position) => setContextMenu({ taskId: task.id, ...position })}
-                    onMove={(task, destination) => void moveTask(task, destination)}
                     onDragStart={startTaskDrag}
                     onDragEnd={endTaskDrag}
-                    onOpenThread={openThread}
+                    onOpenConversation={openTaskConversation}
                   />
                 )}
               </>
@@ -2284,6 +2329,8 @@ export function App() {
         available={localAiChatAvailable}
         projectId={selectedProjectId || null}
         issueId={detailTaskId}
+        onThreadsChange={setAiThreads}
+        openThreadRequest={aiOpenThreadRequest}
       />
 
       <div className="sr-only" role="status" aria-live="polite">{announcement}</div>
