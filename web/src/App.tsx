@@ -24,6 +24,7 @@ import {
   archiveTask as archiveTaskRequest,
   createProject as createProjectRequest,
   createTask as createTaskRequest,
+  getHostRuntime,
   getTaskboardRevision,
   getWorkflowWorkspace,
   getTaskboardMetadata,
@@ -32,6 +33,7 @@ import {
   listProjects,
   listTasks,
   moveTask as moveTaskRequest,
+  publishHostRuntime,
   removeTaskRelation,
   restoreTask as restoreTaskRequest,
   setCurrentUserActor,
@@ -516,7 +518,8 @@ function LocalRealtimeSync({
 
 export function App() {
   const query = useMemo(() => new URLSearchParams(window.location.search), []);
-  const embedded = query.get("host") === "codex";
+  const host = query.get("host");
+  const embedded = host === "codex" || host === "workbuddy";
   const undoShortcut = navigator.userAgent.includes("Macintosh") ? "⌘Z" : "Ctrl+Z";
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [hostContext, setHostContext] = useState<HostContext | null>(null);
@@ -1045,6 +1048,7 @@ export function App() {
       setHostContext(payload);
       setCurrentUserActor(payload.user);
       if (isTheme(payload.theme)) setTheme(payload.theme);
+      if (host === "codex") void publishHostRuntime(payload);
     }
 
     window.addEventListener("message", receiveHostMessage);
@@ -1056,7 +1060,24 @@ export function App() {
       }
       pendingAutomationRequestsRef.current.clear();
     };
-  }, [embedded]);
+  }, [embedded, host]);
+
+  useEffect(() => {
+    if (host !== "workbuddy") return;
+    let disposed = false;
+    const syncRuntime = async () => {
+      try {
+        const runtime = await getHostRuntime();
+        if (!disposed) setHostContext(runtime);
+      } catch {}
+    };
+    void syncRuntime();
+    const timer = window.setInterval(syncRuntime, 1_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [host]);
 
   useLayoutEffect(() => {
     if (!embedded || window.parent === window || !dragRegionRef.current) return;

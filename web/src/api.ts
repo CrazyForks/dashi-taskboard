@@ -9,6 +9,7 @@ import type {
   Attachment,
   Comment,
   DevelopmentScan,
+  HostContext,
   IssueRelationType,
   Project,
   Task,
@@ -99,6 +100,27 @@ export async function getTaskboardRevision(
 ): Promise<{ changed: boolean; revision: number }> {
   const query = new URLSearchParams({ since: String(since) });
   return request<{ changed: boolean; revision: number }>(`/api/revisions?${query}`, { signal });
+}
+
+export async function getHostRuntime(signal?: AbortSignal): Promise<HostContext | null> {
+  const data = await request<{
+    runtime: (Pick<HostContext, "threadId" | "threadRunning" | "threadTodoProgress"> & {
+      updatedAt: number;
+    }) | null;
+  }>("/api/local/host-runtime", { signal });
+  return data.runtime;
+}
+
+export async function publishHostRuntime(context: HostContext): Promise<void> {
+  if (!context.threadId || context.threadRunning === undefined) return;
+  await request("/api/local/host-runtime", {
+    method: "PUT",
+    body: JSON.stringify({
+      threadId: context.threadId,
+      threadRunning: context.threadRunning,
+      threadTodoProgress: context.threadTodoProgress ?? null,
+    }),
+  });
 }
 
 export async function getAiChatCatalog(

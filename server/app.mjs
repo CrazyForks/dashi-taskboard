@@ -33,6 +33,7 @@ const ATTACHMENT_BODY_LIMIT = 25 * 1024 * 1024;
 const AI_CHAT_TURN_BODY_LIMIT = 25 * 1024 * 1024;
 const AI_CHAT_ATTACHMENT_LIMIT = 10;
 const AI_CHAT_SKILL_MARKER = "\uFFFC";
+const HOST_RUNTIME_TTL_MS = 3_000;
 const INLINE_ATTACHMENT_TYPES = new Set([
   "application/pdf",
   "image/avif",
@@ -1411,6 +1412,7 @@ export function createTaskboardServer(options = {}) {
     resolveContext: resolveAiChatContext,
   });
   const aiEventResponses = new Set();
+  let hostRuntime = null;
 
   const server = createServer(async (request, response) => {
     response.setHeader("x-content-type-options", "nosniff");
@@ -1437,6 +1439,42 @@ export function createTaskboardServer(options = {}) {
       if (pathname === "/health") {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
         return sendJson(response, 200, { status: "ok" });
+      }
+
+      if (pathname === "/api/local/host-runtime") {
+        if (request.method === "GET") {
+          const runtime = hostRuntime && Date.now() - hostRuntime.updatedAt <= HOST_RUNTIME_TTL_MS
+            ? hostRuntime
+            : null;
+          return sendJson(response, 200, { runtime });
+        }
+        if (request.method === "PUT") {
+          const body = await readJson(request);
+          assertPlainObject(body);
+          assertAllowedKeys(body, new Set(["threadId", "threadRunning", "threadTodoProgress"]));
+          const threadId = stringField(body.threadId, "threadId", { required: true, maxLength: 256 });
+          if (typeof body.threadRunning !== "boolean") {
+            throw new ApiError(400, "INVALID_FIELD", "'threadRunning' must be a boolean");
+          }
+          let threadTodoProgress = null;
+          if (body.threadTodoProgress != null) {
+            assertPlainObject(body.threadTodoProgress);
+            assertAllowedKeys(body.threadTodoProgress, new Set(["completed", "total"]));
+            const { completed, total } = body.threadTodoProgress;
+            if (!Number.isInteger(completed) || !Number.isInteger(total) || completed < 0 || total < 1) {
+              throw new ApiError(400, "INVALID_FIELD", "'threadTodoProgress' is invalid");
+            }
+            threadTodoProgress = { completed: Math.min(completed, total), total };
+          }
+          hostRuntime = {
+            threadId,
+            threadRunning: body.threadRunning,
+            threadTodoProgress,
+            updatedAt: Date.now(),
+          };
+          return sendJson(response, 200, { runtime: hostRuntime });
+        }
+        return methodNotAllowed(response, ["GET", "PUT"]);
       }
 
       if (pathname === "/api/local/cloud-session") {

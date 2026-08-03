@@ -65,6 +65,7 @@
   let hostRequestSequence = 0;
   let observer = null;
   let reattachTimer = null;
+  let hostContextTimer = null;
   let lastFocusedElement = null;
   let hostContextSnapshot = null;
   let mutedNativeSelections = new Map();
@@ -1313,6 +1314,8 @@
         "aria-current",
       ],
     });
+    hostContextTimer = window.setInterval(postHostContext, 1_000);
+    postHostContext();
   }
 
   function destroy() {
@@ -1320,6 +1323,8 @@
     destroyed = true;
     if (reattachTimer !== null) window.clearTimeout(reattachTimer);
     reattachTimer = null;
+    if (hostContextTimer !== null) window.clearInterval(hostContextTimer);
+    hostContextTimer = null;
     observer?.disconnect();
     observer = null;
     cancelFrameReadyWaiters(new Error("任务面板已关闭"));
