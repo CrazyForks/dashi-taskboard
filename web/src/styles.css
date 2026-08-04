@@ -164,6 +164,19 @@ select {
   cursor: pointer;
 }
 
+:root[data-theme="dark"] select {
+  color-scheme: dark;
+}
+
+:root[data-theme="dark"] select option {
+  background-color: var(--surface-raised);
+  color: var(--text-primary);
+}
+
+:root[data-theme="dark"] select option:checked {
+  background-color: var(--surface-active);
+}
+
 button:disabled,
 select:disabled {
   cursor: not-allowed;
