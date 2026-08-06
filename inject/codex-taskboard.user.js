@@ -725,33 +725,23 @@
     }
   }
 
-  async function waitForPreparedComposer(identifier, skillPath) {
+  async function waitForPreparedComposer(identifier) {
     const deadline = Date.now() + 8_000;
     while (Date.now() < deadline) {
       const editor = document.querySelector('[data-codex-composer="true"][contenteditable="true"]');
       if (editor && editor.getClientRects().length > 0) {
         const containsIdentifier = normalizedLabel(editor.textContent).includes(normalizedLabel(identifier));
-        const skillMention = Array.from(editor.querySelectorAll("[skill-mention-name]"))
-          .find((mention) => (
-            mention.getAttribute("skill-mention-name") === "manage-taskboard"
-            && mention.getAttribute("skill-mention-path") === skillPath
-          ));
-        if (containsIdentifier && skillMention) return editor;
+        if (containsIdentifier) return editor;
       }
       await new Promise((resolve) => window.setTimeout(resolve, 80));
     }
-    throw new Error("Codex 对话输入框没有生成 manage-taskboard Skill 引用");
+    throw new Error("Codex 对话输入框没有写入任务编号");
   }
 
   async function createThreadForTask(payload) {
     const taskId = typeof payload?.taskId === "string" ? payload.taskId.trim() : "";
     const identifier = typeof payload?.identifier === "string" ? payload.identifier.trim() : "";
     const instruction = typeof payload?.instruction === "string" ? payload.instruction.trim() : "";
-    const skillName = typeof payload?.skillName === "string" ? payload.skillName.trim() : "";
-    const skillDisplayName = typeof payload?.skillDisplayName === "string"
-      ? payload.skillDisplayName.trim()
-      : "";
-    const skillPath = typeof payload?.skillPath === "string" ? payload.skillPath.trim() : "";
     const workspacePath = typeof payload?.workspacePath === "string"
       ? payload.workspacePath.trim()
       : "";
@@ -759,9 +749,6 @@
       !taskId
       || !identifier
       || !instruction
-      || !skillName
-      || !skillDisplayName
-      || !skillPath
       || pendingThreadCreation
     ) return;
     pendingThreadCreation = taskId;
@@ -803,13 +790,8 @@
           focusComposerNonce: Date.now(),
         },
       });
-      await requestHostTaskComposerPrefill({
-        instruction,
-        skillDisplayName,
-        skillName,
-        skillPath,
-      });
-      await waitForPreparedComposer(identifier, skillPath);
+      await requestHostTaskComposerPrefill({ instruction });
+      await waitForPreparedComposer(identifier);
       postToFrame({ type: "taskboard:thread-prepared", payload: { taskId } });
     } catch (error) {
       postToFrame({
@@ -1125,17 +1107,9 @@
     return requestHost("ensure");
   }
 
-  function requestHostTaskComposerPrefill({
-    instruction,
-    skillDisplayName,
-    skillName,
-    skillPath,
-  }) {
+  function requestHostTaskComposerPrefill({ instruction }) {
     return requestHost("prefill-task-composer", {
       instruction,
-      skillDisplayName,
-      skillName,
-      skillPath,
     });
   }
 
