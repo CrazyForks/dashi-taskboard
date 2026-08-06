@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.6.9";
+  const VERSION = "0.6.11";
   const SOURCE_HASH = window.__CODEX_TASKBOARD_SOURCE_HASH__;
   const SENTINEL_KEY = "__codexTaskboardInjection__";
   const DEFAULT_TASKBOARD_URL = "http://127.0.0.1:47823/?host=codex";
@@ -74,6 +74,7 @@
   let pendingThreadCreation = null;
   let lastNativeThreadId = "";
   let lastNativeProjectId = "";
+  let suspendedNativeBrowserPanel = null;
   let active = false;
   let destroyed = false;
 
@@ -1210,10 +1211,15 @@
   }
 
   function closeNativeBrowserPanel() {
-    const browserPanelIsVisible = Array.from(
+    if (suspendedNativeBrowserPanel) return;
+    const browserPanel = Array.from(
       document.querySelectorAll("[data-browser-sidebar-webview]"),
-    ).some((node) => window.getComputedStyle(node).visibility !== "hidden");
-    if (!browserPanelIsVisible) return;
+    ).find((node) => window.getComputedStyle(node).visibility !== "hidden");
+    if (!browserPanel) return;
+    const webview = browserPanel.querySelector("webview");
+    suspendedNativeBrowserPanel = {
+      browserTabId: webview?.getAttribute("data-browser-sidebar-browser-tab-id") || null,
+    };
     window.dispatchEvent(new MessageEvent("message", {
       data: {
         type: "toggle-browser-panel",
@@ -1222,6 +1228,20 @@
         initiator: "taskboard_open",
       },
     }));
+  }
+
+  function restoreNativeBrowserPanel() {
+    const browserPanel = suspendedNativeBrowserPanel;
+    suspendedNativeBrowserPanel = null;
+    if (!browserPanel) return;
+    const data = {
+      type: "toggle-browser-panel",
+      open: true,
+      source: "manual",
+      initiator: "taskboard_close",
+    };
+    if (browserPanel.browserTabId) data.browserTabId = browserPanel.browserTabId;
+    window.dispatchEvent(new MessageEvent("message", { data }));
   }
 
   function mountActivePage() {
@@ -1253,6 +1273,7 @@
     active = false;
     if (page) page.hidden = true;
     restoreNativeContent();
+    restoreNativeBrowserPanel();
     restoreNativeSelection();
     document.documentElement.removeAttribute("data-codex-taskboard-open");
     syncEntryState();
