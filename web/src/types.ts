@@ -297,7 +297,6 @@ export interface TaskDraft {
   priority: TaskPriority;
   labels: string[];
   assigneeTarget?: AssigneeTarget;
-  workflowId: string | null;
   developmentContext: DevelopmentContext | null;
   startDate: string | null;
   dueDate: string | null;

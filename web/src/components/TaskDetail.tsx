@@ -27,7 +27,6 @@ import type {
   TaskPriority,
   TaskRelationSummary,
   TaskStatus,
-  WorkflowOption,
 } from "../types";
 import {
   CODEX_AGENT_ACTOR,
@@ -73,7 +72,6 @@ interface TaskDetailProps {
   tasks: Task[];
   currentUser: ActorIdentity;
   availableLabels: string[];
-  workflows: WorkflowOption[];
   developmentScan: DevelopmentScan;
   developmentScanLoading: boolean;
   commentsRevision: number;
@@ -186,7 +184,6 @@ export function TaskDetail({
   tasks,
   currentUser,
   availableLabels,
-  workflows,
   developmentScan,
   developmentScanLoading,
   commentsRevision,
@@ -236,8 +233,6 @@ export function TaskDetail({
   const composerRef = useRef<InlineMediaComposerHandle>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const commentAttachmentInputRef = useRef<HTMLInputElement>(null);
-  const workflowAvailable = !currentTask.workflowId
-    || workflows.some((workflow) => workflow.id === currentTask.workflowId);
   const draft = serializeInlineMedia(commentSegments);
   const commentInlineImages = inlineMediaImages(commentSegments);
 
@@ -1066,27 +1061,6 @@ export function TaskDetail({
                 onChange={(nextLabels) => void saveTask({ labels: nextLabels }, "labels")}
               />
             </div>
-            <label className="detail-property-row workflow-property">
-              <span className="detail-property-icon" aria-hidden="true">
-                <LinearIcon name="dashboard" />
-              </span>
-              <span className="detail-property-label">工作流</span>
-              <select
-                value={currentTask.workflowId ?? ""}
-                disabled={savingProperty === "workflowId"}
-                onChange={(event) => void saveTask({
-                  workflowId: event.target.value || null,
-                }, "workflowId")}
-              >
-                <option value="">未绑定</option>
-                {!workflowAvailable && currentTask.workflowId && (
-                  <option value={currentTask.workflowId}>当前设备未找到此流程</option>
-                )}
-                {workflows.map((workflow) => (
-                  <option value={workflow.id} key={workflow.id}>{workflow.name}</option>
-                ))}
-              </select>
-            </label>
             <label className="detail-property-row development-property">
               <span className="detail-property-icon" aria-hidden="true">
                 <LinearIcon name="branch" />

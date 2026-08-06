@@ -12,7 +12,6 @@ import {
   type TaskDraft,
   type TaskPriority,
   type TaskStatus,
-  type WorkflowOption,
 } from "../types";
 import {
   CODEX_AGENT_ACTOR,
@@ -56,7 +55,6 @@ interface TaskEditorProps {
   task: Task | null;
   initialStatus: TaskStatus;
   labels: string[];
-  workflows: WorkflowOption[];
   currentUser: ActorIdentity;
   developmentScan: DevelopmentScan;
   developmentScanLoading: boolean;
@@ -105,7 +103,6 @@ export function TaskEditor({
   task,
   initialStatus,
   labels: availableLabels,
-  workflows,
   currentUser,
   developmentScan,
   developmentScanLoading,
@@ -124,7 +121,6 @@ export function TaskEditor({
   const [priority, setPriority] = useState<TaskPriority>(task?.priority ?? "none");
   const [assignee, setAssignee] = useState<ActorIdentity>(task?.assignee ?? currentUser);
   const [selectedLabels, setSelectedLabels] = useState<string[]>(task?.labels ?? []);
-  const [workflowId, setWorkflowId] = useState(task?.workflowId ?? "");
   const [developmentContext, setDevelopmentContext] = useState<DevelopmentContext | null>(task?.developmentContext ?? null);
   const [startDate] = useState(task?.startDate ?? "");
   const [dueDate, setDueDate] = useState(task?.dueDate ?? "");
@@ -144,7 +140,6 @@ export function TaskEditor({
     return options;
   }, [developmentContext, developmentScan.contexts]);
 
-  const workflowAvailable = !workflowId || workflows.some((workflow) => workflow.id === workflowId);
   const assigneeOptions = [task?.assignee, currentUser, CODEX_AGENT_ACTOR]
     .filter((actor): actor is ActorIdentity => actor !== undefined)
     .filter((actor, index, actors) => (
@@ -188,7 +183,6 @@ export function TaskEditor({
         priority,
         labels: selectedLabels,
         ...(assigneeTarget ? { assigneeTarget } : {}),
-        workflowId: workflowId || null,
         developmentContext,
         startDate: startDate || null,
         dueDate: dueDate || null,
@@ -327,18 +321,6 @@ export function TaskEditor({
               onOpenChange={(open) => setMenu(open ? "labels" : null)}
               onChange={setSelectedLabels}
             />
-
-            <label className="property-control property-workflow">
-              <LinearIcon name="dashboard" />
-              <span className="sr-only">工作流</span>
-              <select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}>
-                <option value="">工作流</option>
-                {!workflowAvailable && <option value={workflowId}>当前设备未找到此流程</option>}
-                {workflows.map((workflow) => (
-                  <option value={workflow.id} key={workflow.id}>{workflow.name}</option>
-                ))}
-              </select>
-            </label>
 
             <label className="property-control property-development" title={developmentScan.workspacePath ?? undefined}>
               <LinearIcon name="branch" />

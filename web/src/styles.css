@@ -6012,7 +6012,6 @@ kbd {
 .property-priority.priority-medium { color: var(--warning); }
 
 .property-thread input { width: 178px; }
-.property-workflow select { max-width: 190px; }
 .property-development select { max-width: 190px; }
 .property-more { width: 28px; padding: 0; justify-content: center; letter-spacing: 1px; }
 
