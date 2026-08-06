@@ -8,7 +8,7 @@ import priorityLowIcon from "../assets/figma-taskboard/dashboard-priority-low.sv
 import priorityMediumIcon from "../assets/figma-taskboard/dashboard-priority-medium.svg";
 import priorityNoneIcon from "../assets/figma-taskboard/dashboard-priority-none.svg";
 import priorityUrgentIcon from "../assets/figma-taskboard/dashboard-priority-urgent.svg";
-import processingIcon from "../assets/figma-taskboard/dashboard-processing.svg";
+import processingAnimation from "../assets/figma-taskboard/loading-16.svg";
 import { getProjectSummary } from "../api";
 import { labelPresentation } from "../labels";
 import type {
@@ -563,7 +563,7 @@ export function DashboardView({
                   </button>
                   <div className="dashboard-running-footer">
                     <span className="task-processing is-running">
-                      <img className="dashboard-running-state-icon" src={processingIcon} alt="" aria-hidden="true" />
+                      <img className="task-processing-glyph" src={processingAnimation} alt="" aria-hidden="true" />
                       <span className="task-processing-label">正在处理…</span>
                     </span>
                     <TaskConversationMenu
