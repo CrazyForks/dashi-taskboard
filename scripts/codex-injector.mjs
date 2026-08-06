@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { resolvePort } from "../server/app.mjs";
+import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
 import {
   parseTaskboardAutomationHostRequest,
   reconcileTaskboardAutomation,
@@ -24,7 +25,13 @@ const projectRoot = path.resolve(path.dirname(injectorPath), "..");
 const defaultCodexDebuggingPort = 9229;
 const independentCodexProfilePath = "/private/tmp/codex-taskboard-independent-profile-v2";
 const injectionPath = path.join(projectRoot, "inject", "codex-taskboard.user.js");
-const automationPoliciesPath = path.join(projectRoot, ".data", "codex-automation-policies.json");
+const taskboardDataDirectory = process.env.CODEX_TASKBOARD_DATA_DIR
+  ? path.resolve(process.env.CODEX_TASKBOARD_DATA_DIR)
+  : path.join(projectRoot, ".data");
+const automationPoliciesPath = path.join(
+  taskboardDataDirectory,
+  "codex-automation-policies.json",
+);
 const taskboardOrigin = `http://127.0.0.1:${resolvePort()}`;
 const taskboardHealthUrl = `${taskboardOrigin}/health`;
 const taskboardPageUrl = `${taskboardOrigin}/?host=codex`;
@@ -1203,6 +1210,7 @@ ${runtimeSource}`,
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  process.env.CODEX_EXECUTABLE = resolveCodexExecutable({ appPath: options.appPath });
   const cdpVersionUrl = `http://127.0.0.1:${options.port}/json/version`;
 
   if (options.daemon) {

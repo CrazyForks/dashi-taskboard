@@ -27,10 +27,33 @@ function commentConversationTitle(body) {
   return compact.length > 80 ? `${compact.slice(0, 77)}…` : compact;
 }
 
-function attachTaskActivity(task, comments) {
+function attachTaskActivity(task, comments, previewImage = null) {
   const orderedComments = [...comments].sort((left, right) => (
     left.id.localeCompare(right.id)
   ));
+  const participants = [];
+  const participantIds = new Set();
+  const addParticipant = (actor) => {
+    const key = `${actor.type}:${actor.id}`;
+    if (participantIds.has(key)) return;
+    participantIds.add(key);
+    participants.push(actor);
+  };
+  addParticipant({
+    type: task.creatorType,
+    id: task.creatorId,
+    name: task.creatorName,
+    avatarUrl: task.creatorAvatarUrl,
+  });
+  addParticipant(task.assignee);
+  for (const comment of orderedComments) {
+    addParticipant({
+      type: comment.author_type,
+      id: comment.author_id,
+      name: comment.author_name,
+      avatarUrl: comment.author_avatar_url,
+    });
+  }
   const conversationRefs = [];
   if (task.threadId) {
     conversationRefs.push({
@@ -53,6 +76,8 @@ function attachTaskActivity(task, comments) {
   }
 
   task.conversationRefs = conversationRefs;
+  task.participants = participants;
+  task.previewImage = previewImage;
   task.activityKey = JSON.stringify({
     version: 1,
     task: [task.id, task.version, task.updatedAt],
@@ -114,6 +139,7 @@ function taskFromRow(row) {
     },
     workflowId: row.workflow_id,
     developmentContext,
+    startDate: row.start_date,
     dueDate: row.due_date,
     recurrence: row.recurrence_interval && row.recurrence_unit
       ? { interval: row.recurrence_interval, unit: row.recurrence_unit }
@@ -180,6 +206,16 @@ function projectFromRow(row) {
     issueCount: Number(row.issue_count ?? 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function projectSummaryFromRow(row) {
+  return {
+    projectId: row.project_id,
+    summary: row.summary,
+    generatedAt: row.generated_at,
+    attemptedAt: row.attempted_at,
+    error: row.error,
   };
 }
 
@@ -290,6 +326,7 @@ export class TaskboardDatabase {
         git_branch TEXT,
         worktree_path TEXT,
         worktree_branch TEXT,
+        start_date TEXT,
         due_date TEXT,
         recurrence_interval INTEGER,
         recurrence_unit TEXT,
@@ -337,6 +374,14 @@ export class TaskboardDatabase {
         workspace TEXT NOT NULL,
         version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
         updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS project_summaries (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        summary TEXT,
+        generated_at TEXT,
+        attempted_at TEXT NOT NULL,
+        error TEXT
       );
 
       CREATE TABLE IF NOT EXISTS ai_chat_threads (
@@ -425,6 +470,9 @@ export class TaskboardDatabase {
     }
     if (!taskColumns.some((column) => column.name === "due_date")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN due_date TEXT");
+    }
+    if (!taskColumns.some((column) => column.name === "start_date")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN start_date TEXT");
     }
     if (!taskColumns.some((column) => column.name === "recurrence_interval")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN recurrence_interval INTEGER");
@@ -593,6 +641,7 @@ export class TaskboardDatabase {
           git_branch TEXT,
           worktree_path TEXT,
           worktree_branch TEXT,
+          start_date TEXT,
           due_date TEXT,
           recurrence_interval INTEGER,
           recurrence_unit TEXT,
@@ -605,13 +654,13 @@ export class TaskboardDatabase {
         INSERT INTO tasks_status_migration (
           id, identifier, project_id, title, description, status, priority, labels,
           sort_order, thread_id, git_branch, worktree_path, worktree_branch,
-          due_date, recurrence_interval, recurrence_unit,
+          start_date, due_date, recurrence_interval, recurrence_unit,
           archived_at, version, created_at, updated_at
         )
         SELECT
           id, identifier, project_id, title, description, status, priority, labels,
           sort_order, thread_id, git_branch, worktree_path, worktree_branch,
-          due_date, recurrence_interval, recurrence_unit,
+          start_date, due_date, recurrence_interval, recurrence_unit,
           archived_at, version, created_at, updated_at
         FROM tasks;
 
@@ -693,6 +742,57 @@ export class TaskboardDatabase {
         projects.updated_at
     `).get(id);
     return row ? projectFromRow(row) : null;
+  }
+
+  getProjectSummary(projectId) {
+    const row = this.database.prepare(`
+      SELECT project_id, summary, generated_at, attempted_at, error
+      FROM project_summaries
+      WHERE project_id = ?
+    `).get(projectId);
+    return row ? projectSummaryFromRow(row) : {
+      projectId,
+      summary: null,
+      generatedAt: null,
+      attemptedAt: null,
+      error: null,
+    };
+  }
+
+  listProjectSummaries() {
+    return this.database.prepare(`
+      SELECT project_id, summary, generated_at, attempted_at, error
+      FROM project_summaries
+      ORDER BY project_id
+    `).all().map(projectSummaryFromRow);
+  }
+
+  saveProjectSummary(projectId, summary) {
+    const timestamp = now();
+    this.database.prepare(`
+      INSERT INTO project_summaries (
+        project_id, summary, generated_at, attempted_at, error
+      ) VALUES (?, ?, ?, ?, NULL)
+      ON CONFLICT(project_id) DO UPDATE SET
+        summary = excluded.summary,
+        generated_at = excluded.generated_at,
+        attempted_at = excluded.attempted_at,
+        error = NULL
+    `).run(projectId, summary, timestamp, timestamp);
+    return this.getProjectSummary(projectId);
+  }
+
+  saveProjectSummaryError(projectId, error) {
+    const timestamp = now();
+    this.database.prepare(`
+      INSERT INTO project_summaries (
+        project_id, summary, generated_at, attempted_at, error
+      ) VALUES (?, NULL, NULL, ?, ?)
+      ON CONFLICT(project_id) DO UPDATE SET
+        attempted_at = excluded.attempted_at,
+        error = excluded.error
+    `).run(projectId, timestamp, error);
+    return this.getProjectSummary(projectId);
   }
 
   getWorkflowWorkspace(projectId) {
@@ -1047,9 +1147,11 @@ export class TaskboardDatabase {
     `;
     const rows = this.database.prepare(sql).all(...values);
     const commentsByTask = this.#commentsForTaskActivity(rows.map((row) => row.id));
+    const previewImagesByTask = this.#taskPreviewImages(rows.map((row) => row.id));
     return rows.map((row) => attachTaskActivity(
       this.#taskWithRelations(row),
       commentsByTask.get(row.id) ?? [],
+      previewImagesByTask.get(row.id) ?? null,
     ));
   }
 
@@ -1058,7 +1160,8 @@ export class TaskboardDatabase {
     if (!row) return null;
     const task = this.#taskWithRelations(row);
     const comments = this.#commentsForTaskActivity([task.id]).get(task.id) ?? [];
-    return attachTaskActivity(task, comments);
+    const previewImage = this.#taskPreviewImages([task.id]).get(task.id) ?? null;
+    return attachTaskActivity(task, comments, previewImage);
   }
 
   createTask(input) {
@@ -1078,11 +1181,11 @@ export class TaskboardDatabase {
       let sortOrder = input.sortOrder;
       if (sortOrder === undefined) {
         const row = this.database.prepare(`
-          SELECT COALESCE(MAX(sort_order), 0) AS maximum
+          SELECT MIN(sort_order) AS minimum
           FROM tasks
           WHERE project_id = ? AND status = ? AND archived_at IS NULL
         `).get(input.projectId, input.status);
-        sortOrder = row.maximum + 1000;
+        sortOrder = row.minimum === null ? 1000 : row.minimum - 1000;
       }
 
       this.database.prepare(`
@@ -1094,9 +1197,9 @@ export class TaskboardDatabase {
           sort_order, thread_id, creator_type, creator_id, creator_name, creator_avatar_url,
           assignee_type, assignee_id, assignee_name, assignee_avatar_url,
           workflow_id, git_branch, worktree_path, worktree_branch,
-          due_date, recurrence_interval, recurrence_unit,
+          start_date, due_date, recurrence_interval, recurrence_unit,
           archived_at, version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
       `).run(
         id,
         identifier,
@@ -1120,6 +1223,7 @@ export class TaskboardDatabase {
         input.developmentContext?.type === "branch" ? input.developmentContext.branch : null,
         input.developmentContext?.type === "worktree" ? input.developmentContext.path : null,
         input.developmentContext?.type === "worktree" ? input.developmentContext.branch : null,
+        input.startDate,
         input.dueDate,
         input.recurrence?.interval ?? null,
         input.recurrence?.unit ?? null,
@@ -1150,6 +1254,7 @@ export class TaskboardDatabase {
       priority: "priority",
       labels: "labels",
       workflowId: "workflow_id",
+      startDate: "start_date",
       dueDate: "due_date",
     };
     const assignments = [];
@@ -1182,6 +1287,15 @@ export class TaskboardDatabase {
       assignments.push(`${columns[key]} = ?`);
       values.push(key === "labels" ? JSON.stringify(value) : value);
     }
+    if (Object.hasOwn(changes, "status") && changes.status !== current.status) {
+      const row = this.database.prepare(`
+        SELECT MIN(sort_order) AS minimum
+        FROM tasks
+        WHERE project_id = ? AND status = ? AND archived_at IS NULL AND id != ?
+      `).get(current.projectId, changes.status, current.id);
+      assignments.push("sort_order = ?");
+      values.push(row.minimum === null ? 1000 : row.minimum - 1000);
+    }
     if (threadId !== undefined) {
       assignments.push("thread_id = ?");
       values.push(threadId);
@@ -1212,7 +1326,14 @@ export class TaskboardDatabase {
     if (current.archivedAt !== null) {
       throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be moved");
     }
-    if (sortOrder === undefined) {
+    if (status !== current.status && sortOrder === undefined) {
+      const row = this.database.prepare(`
+        SELECT MIN(sort_order) AS minimum
+        FROM tasks
+        WHERE project_id = ? AND status = ? AND archived_at IS NULL AND id != ?
+      `).get(current.projectId, status, current.id);
+      sortOrder = row.minimum === null ? 1000 : row.minimum - 1000;
+    } else if (sortOrder === undefined) {
       const row = this.database.prepare(`
         SELECT COALESCE(MAX(sort_order), 0) AS maximum
         FROM tasks
@@ -1523,7 +1644,9 @@ export class TaskboardDatabase {
       if (chunk.length === 0) continue;
       const placeholders = chunk.map(() => "?").join(", ");
       const rows = this.database.prepare(`
-        SELECT id, task_id, body, thread_id, version, updated_at
+        SELECT
+          id, task_id, body, thread_id, author_type, author_id, author_name,
+          author_avatar_url, version, updated_at
         FROM comments
         WHERE task_id IN (${placeholders})
         ORDER BY task_id, id
@@ -1531,6 +1654,26 @@ export class TaskboardDatabase {
       for (const row of rows) commentsByTask.get(row.task_id)?.push(row);
     }
     return commentsByTask;
+  }
+
+  #taskPreviewImages(taskIds) {
+    const imagesByTask = new Map();
+    for (let offset = 0; offset < taskIds.length; offset += 400) {
+      const chunk = taskIds.slice(offset, offset + 400);
+      if (chunk.length === 0) continue;
+      const placeholders = chunk.map(() => "?").join(", ");
+      const rows = this.database.prepare(`
+        SELECT * FROM attachments
+        WHERE task_id IN (${placeholders})
+          AND comment_id IS NULL
+          AND content_type LIKE 'image/%'
+        ORDER BY task_id, created_at, id
+      `).all(...chunk);
+      for (const row of rows) {
+        if (!imagesByTask.has(row.task_id)) imagesByTask.set(row.task_id, attachmentFromRow(row));
+      }
+    }
+    return imagesByTask;
   }
 
   #attachmentsForComment(commentId) {

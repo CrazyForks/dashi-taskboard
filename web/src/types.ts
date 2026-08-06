@@ -181,6 +181,14 @@ export interface Project {
   updatedAt: string;
 }
 
+export interface ProjectSummary {
+  projectId: string;
+  summary: string | null;
+  updatedAt: string | null;
+  refreshing: boolean;
+  error: string | null;
+}
+
 export interface TaskRelationSummary {
   id: string;
   identifier: string;
@@ -220,6 +228,8 @@ export interface Task {
   sortOrder: number;
   threadId: string | null;
   conversationRefs: TaskConversationRef[];
+  participants: ActorIdentity[];
+  previewImage: Attachment | null;
   activityKey: string;
   activityUpdatedAt: string;
   creatorType: ActorType;
@@ -229,6 +239,7 @@ export interface Task {
   assignee: ActorIdentity;
   workflowId: string | null;
   developmentContext: DevelopmentContext | null;
+  startDate: string | null;
   dueDate: string | null;
   recurrence: Recurrence | null;
   archivedAt: string | null;
@@ -288,6 +299,7 @@ export interface TaskDraft {
   assigneeTarget?: AssigneeTarget;
   workflowId: string | null;
   developmentContext: DevelopmentContext | null;
+  startDate: string | null;
   dueDate: string | null;
   recurrence: Recurrence | null;
 }

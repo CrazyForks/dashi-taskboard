@@ -3,7 +3,11 @@ import type { DragEvent } from "react";
 import type { Task, TaskStatus } from "../types";
 import type { TaskCardPresentation, TaskConversationItem } from "../taskConversations";
 import { TaskCard } from "./TaskCard";
-import { TaskboardIcon, type TaskboardIconName } from "./TaskboardIcon";
+import {
+  TaskboardIcon,
+  taskboardIconSource,
+  type TaskboardIconName,
+} from "./TaskboardIcon";
 
 export const STATUS_DETAILS: Record<
   TaskStatus,
@@ -18,14 +22,42 @@ export const STATUS_DETAILS: Record<
   canceled: { label: "取消", tone: "canceled" },
 };
 
+const STATUS_ICONS: Record<TaskStatus, TaskboardIconName> = {
+  backlog: "statusTodo",
+  todo: "statusTodo",
+  in_progress: "statusProgress",
+  in_review: "statusReview",
+  blocked: "statusBlocked",
+  done: "statusReview",
+  canceled: "statusBlocked",
+};
+
+const COLUMN_STATUS_ICONS: Record<TaskStatus, TaskboardIconName> = {
+  backlog: "statusTodo",
+  todo: "columnStatusTodo",
+  in_progress: "columnStatusProgress",
+  in_review: "columnStatusReview",
+  blocked: "columnStatusBlocked",
+  done: "statusReview",
+  canceled: "statusBlocked",
+};
+
+const COLUMN_ADD_ICONS: Partial<Record<TaskStatus, TaskboardIconName>> = {
+  todo: "columnAddTodo",
+  in_progress: "columnAddProgress",
+  in_review: "columnAddReview",
+};
+
+export function statusIconSource(status: TaskStatus) {
+  return taskboardIconSource(STATUS_ICONS[status]);
+}
+
 export function StatusIcon({ status }: { status: TaskStatus }) {
-  const icon: Partial<Record<TaskStatus, TaskboardIconName>> = {
-    todo: "statusTodo",
-    in_progress: "statusProgress",
-    in_review: "statusReview",
-    blocked: "statusBlocked",
-  };
-  return icon[status] ? <TaskboardIcon name={icon[status]} /> : null;
+  return <TaskboardIcon name={STATUS_ICONS[status]} />;
+}
+
+function ColumnStatusIcon({ status }: { status: TaskStatus }) {
+  return <TaskboardIcon name={COLUMN_STATUS_ICONS[status]} />;
 }
 
 interface BoardColumnProps {
@@ -134,11 +166,10 @@ export function BoardColumn({
     >
       <header className="column-header">
         <div className="column-heading">
-          <span className={`status-icon status-icon-${details.tone}`}>
-            <StatusIcon status={status} />
+          <span className={`column-status-icon status-icon-${details.tone}`}>
+            <ColumnStatusIcon status={status} />
           </span>
           <h2 id={`column-${status}`}>{details.label}</h2>
-          <span className="task-count" aria-label={`${tasks.length} 个议题`}>{tasks.length}</span>
         </div>
         <div className="column-actions">
           <button
@@ -148,7 +179,7 @@ export function BoardColumn({
             aria-label={`在${details.label}中新建议题`}
             title={`添加到${details.label}`}
           >
-            <TaskboardIcon name="columnAdd" />
+            <TaskboardIcon name={COLUMN_ADD_ICONS[status] ?? "columnAdd"} />
           </button>
         </div>
       </header>

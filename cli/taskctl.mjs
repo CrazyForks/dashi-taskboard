@@ -41,6 +41,7 @@ const COMMAND_OPTIONS = new Map([
       "git-branch",
       "worktree-path",
       "worktree-branch",
+      "start-date",
       "due-date",
       "recurrence-interval",
       "recurrence-unit",
@@ -60,6 +61,7 @@ const COMMAND_OPTIONS = new Map([
       "git-branch",
       "worktree-path",
       "worktree-branch",
+      "start-date",
       "due-date",
       "recurrence-interval",
       "recurrence-unit",
@@ -502,6 +504,7 @@ async function createIssue(api, options, overrides) {
     labels: parseLabels(options.labels),
     threadId,
     ...optionalField("developmentContext", developmentContext),
+    ...optionalField("startDate", options["start-date"]),
     ...optionalField("dueDate", options["due-date"]),
     ...optionalField("recurrence", recurrence),
   });
@@ -520,6 +523,7 @@ async function updateIssue(api, taskId, options, overrides) {
     ...optionalField("priority", options.priority),
     ...optionalField("labels", options.labels === undefined ? undefined : parseLabels(options.labels)),
     ...optionalField("developmentContext", developmentContext),
+    ...optionalField("startDate", options["start-date"]),
     ...optionalField("dueDate", options["due-date"]),
     ...optionalField("recurrence", recurrence),
   };

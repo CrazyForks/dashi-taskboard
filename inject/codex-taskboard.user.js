@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.6.8";
+  const VERSION = "0.6.9";
   const SOURCE_HASH = window.__CODEX_TASKBOARD_SOURCE_HASH__;
   const SENTINEL_KEY = "__codexTaskboardInjection__";
   const DEFAULT_TASKBOARD_URL = "http://127.0.0.1:47823/?host=codex";
@@ -28,6 +28,7 @@
   const PLUGIN_LABELS = ["插件", "plugins"];
   const NATIVE_PAGE_LABELS = [
     "新建任务",
+    "新对话",
     "new task",
     "new chat",
     "拉取请求",
@@ -1208,6 +1209,21 @@
       .forEach((node) => node.removeAttribute(HOST_ATTRIBUTE));
   }
 
+  function closeNativeBrowserPanel() {
+    const browserPanelIsVisible = Array.from(
+      document.querySelectorAll("[data-browser-sidebar-webview]"),
+    ).some((node) => window.getComputedStyle(node).visibility !== "hidden");
+    if (!browserPanelIsVisible) return;
+    window.dispatchEvent(new MessageEvent("message", {
+      data: {
+        type: "toggle-browser-panel",
+        open: false,
+        source: "manual",
+        initiator: "taskboard_open",
+      },
+    }));
+  }
+
   function mountActivePage() {
     if (!active) return;
     if (!page) page = createPage();
@@ -1253,6 +1269,7 @@
     }
     const generation = ++openGeneration;
     active = true;
+    closeNativeBrowserPanel();
     ensureEntry();
     mountActivePage();
     syncEntryState();

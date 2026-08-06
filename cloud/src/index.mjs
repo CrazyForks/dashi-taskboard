@@ -172,10 +172,10 @@ function parseSortOrder(value) {
   return value;
 }
 
-function parseDueDate(value) {
-  const date = stringField(value, "dueDate", { nullable: true, maxLength: 10 });
+function parseDueDate(value, name = "dueDate") {
+  const date = stringField(value, name, { nullable: true, maxLength: 10 });
   if (date !== null && date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    throw new ApiError(400, "INVALID_FIELD", "'dueDate' must use YYYY-MM-DD");
+    throw new ApiError(400, "INVALID_FIELD", `'${name}' must use YYYY-MM-DD`);
   }
   return date;
 }
@@ -496,8 +496,31 @@ function commentConversationTitle(body) {
   return compact.length > 80 ? `${compact.slice(0, 77)}…` : compact;
 }
 
-function attachTaskActivity(task, comments) {
+function attachTaskActivity(task, comments, previewImage = null) {
   const orderedComments = [...comments].sort((left, right) => left.id.localeCompare(right.id));
+  const participants = [];
+  const participantIds = new Set();
+  const addParticipant = (actor) => {
+    const key = `${actor.type}:${actor.id}`;
+    if (participantIds.has(key)) return;
+    participantIds.add(key);
+    participants.push(actor);
+  };
+  addParticipant({
+    type: task.creatorType,
+    id: task.creatorId,
+    name: task.creatorName,
+    avatarUrl: task.creatorAvatarUrl,
+  });
+  addParticipant(task.assignee);
+  for (const comment of orderedComments) {
+    addParticipant({
+      type: comment.author_type,
+      id: comment.author_id,
+      name: comment.author_name,
+      avatarUrl: comment.author_avatar_url,
+    });
+  }
   const conversationRefs = [];
   if (task.threadId) {
     conversationRefs.push({
@@ -519,6 +542,8 @@ function attachTaskActivity(task, comments) {
     });
   }
   task.conversationRefs = conversationRefs;
+  task.participants = participants;
+  task.previewImage = previewImage;
   task.activityKey = JSON.stringify({
     version: 1,
     task: [task.id, task.version, task.updatedAt],
@@ -555,6 +580,7 @@ function taskFromRow(row) {
     },
     workflowId: row.workflow_id,
     developmentContext: developmentContextFromRow(row),
+    startDate: row.start_date,
     dueDate: row.due_date,
     recurrence: row.recurrence_interval && row.recurrence_unit
       ? { interval: row.recurrence_interval, unit: row.recurrence_unit }
@@ -671,7 +697,7 @@ async function hydrateComment(env, row) {
 
 async function hydrateTask(env, row, activityComments = null) {
   const task = taskFromRow(row);
-  const [parent, subIssues, blockedBy, blocks, related] = await Promise.all([
+  const [parent, subIssues, blockedBy, blocks, related, previewImageRow] = await Promise.all([
     env.DB.prepare(`
       SELECT tasks.*
       FROM task_relations
@@ -717,6 +743,14 @@ async function hydrateTask(env, row, activityComments = null) {
         )
       ORDER BY tasks.sort_order, tasks.created_at, tasks.id
     `).bind(task.id, task.id, task.id)),
+    env.DB.prepare(`
+      SELECT * FROM attachments
+      WHERE task_id = ?
+        AND comment_id IS NULL
+        AND content_type LIKE 'image/%'
+      ORDER BY created_at, id
+      LIMIT 1
+    `).bind(task.id).first(),
   ]);
   task.relations = {
     parent: parent ? taskRelationSummaryFromRow(parent) : null,
@@ -726,12 +760,18 @@ async function hydrateTask(env, row, activityComments = null) {
     related: related.map(taskRelationSummaryFromRow),
   };
   const comments = activityComments ?? await all(env.DB.prepare(`
-    SELECT id, task_id, body, thread_id, version, updated_at
+    SELECT
+      id, task_id, body, thread_id, author_type, author_id, author_name,
+      author_avatar_url, version, updated_at
     FROM comments
     WHERE task_id = ?
     ORDER BY id
   `).bind(task.id));
-  return attachTaskActivity(task, comments);
+  return attachTaskActivity(
+    task,
+    comments,
+    previewImageRow ? attachmentFromRow(previewImageRow) : null,
+  );
 }
 
 async function getTask(env, id) {
@@ -747,7 +787,9 @@ async function taskActivityComments(env, taskIds) {
     if (chunk.length === 0) continue;
     const placeholders = chunk.map(() => "?").join(", ");
     batches.push(all(env.DB.prepare(`
-      SELECT id, task_id, body, thread_id, version, updated_at
+      SELECT
+        id, task_id, body, thread_id, author_type, author_id, author_name,
+        author_avatar_url, version, updated_at
       FROM comments
       WHERE task_id IN (${placeholders})
       ORDER BY task_id, id
@@ -790,6 +832,7 @@ function parseTaskCreate(body) {
     "assigneeTarget",
     "workflowId",
     "developmentContext",
+    "startDate",
     "dueDate",
     "recurrence",
   ]));
@@ -805,6 +848,7 @@ function parseTaskCreate(body) {
     assigneeTarget: parseAssigneeTarget(body.assigneeTarget),
     workflowId: parseWorkflowId(body.workflowId ?? null),
     developmentContext: parseDevelopmentContext(body.developmentContext ?? null),
+    startDate: parseDueDate(body.startDate ?? null, "startDate"),
     dueDate: parseDueDate(body.dueDate ?? null),
     recurrence: parseRecurrence(body.recurrence ?? null),
   };
@@ -827,6 +871,7 @@ function parseTaskPatch(body) {
     "assigneeTarget",
     "workflowId",
     "developmentContext",
+    "startDate",
     "dueDate",
     "recurrence",
   ]));
@@ -844,6 +889,7 @@ function parseTaskPatch(body) {
   if (body.developmentContext !== undefined) {
     changes.developmentContext = parseDevelopmentContext(body.developmentContext);
   }
+  if (body.startDate !== undefined) changes.startDate = parseDueDate(body.startDate, "startDate");
   if (body.dueDate !== undefined) changes.dueDate = parseDueDate(body.dueDate);
   if (body.recurrence !== undefined) changes.recurrence = parseRecurrence(body.recurrence);
   const assigneeTarget = parseAssigneeTarget(body.assigneeTarget);
@@ -1169,7 +1215,7 @@ async function createTask(env, input, actor) {
         sort_order, thread_id, creator_type, creator_id, creator_name, creator_avatar_url,
         assignee_type, assignee_id, assignee_name, assignee_avatar_url,
         workflow_id, development_context_type, development_branch,
-        due_date, recurrence_interval, recurrence_unit,
+        start_date, due_date, recurrence_interval, recurrence_unit,
         archived_at, version, created_at, updated_at
       )
       SELECT
@@ -1177,7 +1223,7 @@ async function createTask(env, input, actor) {
         ? || '-' || CAST(next_task_number AS TEXT),
         projects.id,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         NULL, 1, ?, ?
       FROM projects
       WHERE projects.id = ?
@@ -1202,6 +1248,7 @@ async function createTask(env, input, actor) {
       input.workflowId,
       input.developmentContext?.type ?? null,
       input.developmentContext?.branch ?? null,
+      input.startDate,
       input.dueDate,
       input.recurrence?.interval ?? null,
       input.recurrence?.unit ?? null,
@@ -1248,6 +1295,7 @@ async function updateTask(env, id, input, actor) {
     priority: "priority",
     labels: "labels",
     workflowId: "workflow_id",
+    startDate: "start_date",
     dueDate: "due_date",
   };
   for (const [key, value] of Object.entries(input.changes)) {
@@ -1261,6 +1309,15 @@ async function updateTask(env, id, input, actor) {
       assignments.push(`${columns[key]} = ?`);
       values.push(key === "labels" ? JSON.stringify(value) : value);
     }
+  }
+  if (Object.hasOwn(input.changes, "status") && input.changes.status !== currentTask.status) {
+    const row = await env.DB.prepare(`
+      SELECT MIN(sort_order) AS minimum
+      FROM tasks
+      WHERE project_id = ? AND status = ? AND archived_at IS NULL AND id != ?
+    `).bind(current.project_id, input.changes.status, current.id).first();
+    assignments.push("sort_order = ?");
+    values.push(row?.minimum == null ? 1000 : row.minimum - 1000);
   }
   if (input.assigneeTarget !== undefined) {
     const assignee = resolveAssignee(input.assigneeTarget, actor);
@@ -1302,7 +1359,14 @@ async function moveTask(env, id, input) {
     throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be moved");
   }
   let sortOrder = input.sortOrder;
-  if (sortOrder === undefined) {
+  if (input.status !== current.status && sortOrder === undefined) {
+    const row = await env.DB.prepare(`
+      SELECT MIN(sort_order) AS minimum
+      FROM tasks
+      WHERE project_id = ? AND status = ? AND archived_at IS NULL AND id != ?
+    `).bind(current.project_id, input.status, current.id).first();
+    sortOrder = row?.minimum == null ? 1000 : row.minimum - 1000;
+  } else if (sortOrder === undefined) {
     const row = await env.DB.prepare(`
       SELECT COALESCE(MAX(sort_order), 0) AS maximum
       FROM tasks

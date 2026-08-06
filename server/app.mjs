@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isIP } from "node:net";
 import os from "node:os";
@@ -15,6 +15,7 @@ import {
   isTaskPriority,
   isTaskStatus,
 } from "../shared/domain.mjs";
+import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
 import { normalizeWorkflowSnapshot } from "../shared/workflow-control-flow.mjs";
 import { AiChatService } from "./ai-chat.mjs";
 import { resolveAiWorkspace, resolveMappedAiWorkspace } from "./ai-chat-catalog.mjs";
@@ -25,6 +26,7 @@ import {
   isLocalCompanionRoute,
 } from "./cloud-proxy.mjs";
 import { ApiError, TaskboardDatabase } from "./database.mjs";
+import { ProjectSummaryService } from "./project-summary.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
@@ -34,6 +36,7 @@ const AI_CHAT_TURN_BODY_LIMIT = 25 * 1024 * 1024;
 const AI_CHAT_ATTACHMENT_LIMIT = 10;
 const AI_CHAT_SKILL_MARKER = "\uFFFC";
 const HOST_RUNTIME_TTL_MS = 3_000;
+const CODEX_PLAN_TAIL_BYTES = 16 * 1024 * 1024;
 const INLINE_ATTACHMENT_TYPES = new Set([
   "application/pdf",
   "image/avif",
@@ -569,7 +572,7 @@ function parseTaskCreate(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
     "projectId", "title", "description", "status", "priority", "labels", "sortOrder", "threadId",
-    "assigneeTarget", "workflowId", "developmentContext", "dueDate", "recurrence",
+    "assigneeTarget", "workflowId", "developmentContext", "startDate", "dueDate", "recurrence",
   ]));
   const projectId = validateProjectId(body.projectId ?? DEFAULT_PROJECT_ID);
   const task = {
@@ -584,6 +587,7 @@ function parseTaskCreate(body) {
     assigneeTarget: parseAssigneeTarget(body.assigneeTarget),
     workflowId: parseWorkflowId(body.workflowId ?? null),
     developmentContext: parseDevelopmentContext(body.developmentContext ?? null),
+    startDate: parseDueDate(body.startDate ?? null, "startDate"),
     dueDate: parseDueDate(body.dueDate ?? null),
     recurrence: parseRecurrence(body.recurrence ?? null),
   };
@@ -597,7 +601,7 @@ function parseTaskPatch(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
     "version", "title", "description", "status", "priority", "labels", "threadId",
-    "assigneeTarget", "workflowId", "developmentContext", "dueDate", "recurrence",
+    "assigneeTarget", "workflowId", "developmentContext", "startDate", "dueDate", "recurrence",
   ]));
   const version = parseVersion(body.version);
   const threadId = parseThreadId(body.threadId);
@@ -610,6 +614,7 @@ function parseTaskPatch(body) {
   if (body.labels !== undefined) changes.labels = parseLabels(body.labels);
   if (body.workflowId !== undefined) changes.workflowId = parseWorkflowId(body.workflowId);
   if (body.developmentContext !== undefined) changes.developmentContext = parseDevelopmentContext(body.developmentContext);
+  if (body.startDate !== undefined) changes.startDate = parseDueDate(body.startDate, "startDate");
   if (body.dueDate !== undefined) changes.dueDate = parseDueDate(body.dueDate);
   if (body.recurrence !== undefined) changes.recurrence = parseRecurrence(body.recurrence);
   if (changes.recurrence && body.dueDate === null) {
@@ -1283,7 +1288,7 @@ export function resolveServerOptions(options = {}) {
     cloudConfigPath: options.cloudConfigPath ?? path.join(dataDirectory, "cloud-companion.json"),
     staticDirectory: options.staticDirectory ?? path.join(PROJECT_ROOT, "dist", "web"),
     skillPath: options.skillPath ?? path.join(PROJECT_ROOT, "skills", "manage-taskboard", "SKILL.md"),
-    codexExecutable: options.codexExecutable ?? process.env.CODEX_EXECUTABLE ?? "codex",
+    codexExecutable: resolveCodexExecutable({ explicit: options.codexExecutable }),
     codexStatePath: options.codexStatePath
       ?? path.join(codexHome, ".codex-global-state.json"),
     codexProcessesPath: options.codexProcessesPath
@@ -1356,11 +1361,23 @@ export function createTaskboardServer(options = {}) {
   async function resolveAiChatContext(projectId, issueId) {
     const config = await cloudConfig.read();
     if (!config.remoteUrl) {
-      const resolvedWorkspace = await resolveAiWorkspace(
-        projectId,
-        resolved.codexStatePath,
-        database,
-      );
+      let resolvedWorkspace;
+      try {
+        resolvedWorkspace = await resolveAiWorkspace(
+          projectId,
+          resolved.codexStatePath,
+          database,
+        );
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.code !== "PROJECT_WORKSPACE_UNAVAILABLE") {
+          throw error;
+        }
+        resolvedWorkspace = {
+          workspacePath: PROJECT_ROOT,
+          addDirectories: [],
+          project: database.getProject(projectId),
+        };
+      }
       let issue;
       if (issueId !== undefined) {
         issue = database.getTask(issueId);
@@ -1411,8 +1428,128 @@ export function createTaskboardServer(options = {}) {
     manageTaskboardSkillPath: resolved.skillPath,
     resolveContext: resolveAiChatContext,
   });
+  const projectSummary = new ProjectSummaryService({
+    database,
+    codexExecutable: resolved.codexExecutable,
+    workspacePath: PROJECT_ROOT,
+  });
   const aiEventResponses = new Set();
+  const codexSessionSearches = new Map();
+  const codexSessionStateCache = new Map();
+  const codexSessionsDirectory = path.join(path.dirname(resolved.codexStatePath), "sessions");
   let hostRuntime = null;
+
+  async function findCodexSession(threadId) {
+    const cached = codexSessionSearches.get(threadId);
+    if (cached && (cached.path || Date.now() - cached.checkedAt < 5_000)) return cached.path;
+
+    const suffix = `-${threadId}.jsonl`;
+    const directories = [codexSessionsDirectory];
+    while (directories.length > 0) {
+      const directory = directories.pop();
+      let entries;
+      try {
+        entries = await readdir(directory, { withFileTypes: true });
+      } catch (error) {
+        if (error.code === "ENOENT") continue;
+        throw error;
+      }
+      for (const entry of entries) {
+        const entryPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          directories.push(entryPath);
+        } else if (entry.isFile() && entry.name.endsWith(suffix)) {
+          codexSessionSearches.set(threadId, { path: entryPath, checkedAt: Date.now() });
+          return entryPath;
+        }
+      }
+    }
+
+    codexSessionSearches.set(threadId, { path: null, checkedAt: Date.now() });
+    return null;
+  }
+
+  async function readCodexSessionState(threadId) {
+    const sessionPath = await findCodexSession(threadId);
+    if (!sessionPath) return null;
+
+    const sessionStat = await stat(sessionPath);
+    const cached = codexSessionStateCache.get(sessionPath);
+    if (cached?.size === sessionStat.size && cached.mtimeMs === sessionStat.mtimeMs) {
+      return cached.state;
+    }
+
+    const length = Math.min(sessionStat.size, CODEX_PLAN_TAIL_BYTES);
+    const buffer = Buffer.alloc(length);
+    const handle = await open(sessionPath, "r");
+    try {
+      await handle.read(buffer, 0, length, sessionStat.size - length);
+    } finally {
+      await handle.close();
+    }
+
+    const lines = buffer.toString("utf8").split("\n");
+    if (length < sessionStat.size) lines.shift();
+    const records = [];
+    for (const line of lines) {
+      try {
+        records.push(JSON.parse(line));
+      } catch {}
+    }
+
+    const turnStates = new Map();
+    for (const record of records) {
+      const payload = record?.payload;
+      if (record?.type !== "event_msg" || typeof payload?.turn_id !== "string") continue;
+      if (payload.type === "task_started") turnStates.set(payload.turn_id, true);
+      if (payload.type === "task_complete" || payload.type === "turn_aborted") {
+        turnStates.set(payload.turn_id, false);
+      }
+    }
+
+    let progress = null;
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const record = records[index];
+      const payload = record?.payload;
+      if (payload?.type !== "custom_tool_call" || typeof payload.input !== "string") continue;
+
+      let statuses = [];
+      if (payload.name === "update_plan") {
+        try {
+          const input = JSON.parse(payload.input);
+          statuses = Array.isArray(input.plan)
+            ? input.plan.map((item) => item?.status).filter(Boolean)
+            : [];
+        } catch {}
+      } else if (payload.name === "exec") {
+        const callIndex = payload.input.lastIndexOf("tools.update_plan(");
+        if (callIndex < 0) continue;
+        statuses = [...payload.input.slice(callIndex).matchAll(
+          /["']?status["']?\s*:\s*["'](completed|in_progress|pending)["']/g,
+        )].map((match) => match[1]);
+      }
+
+      if (statuses.length > 0) {
+        progress = {
+          completed: statuses.filter((status) => status === "completed").length,
+          total: statuses.length,
+        };
+        break;
+      }
+    }
+
+    const state = {
+      completed: progress?.completed ?? null,
+      total: progress?.total ?? null,
+      running: [...turnStates.values()].some(Boolean),
+    };
+    codexSessionStateCache.set(sessionPath, {
+      size: sessionStat.size,
+      mtimeMs: sessionStat.mtimeMs,
+      state,
+    });
+    return state;
+  }
 
   const server = createServer(async (request, response) => {
     response.setHeader("x-content-type-options", "nosniff");
@@ -1439,6 +1576,25 @@ export function createTaskboardServer(options = {}) {
       if (pathname === "/health") {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
         return sendJson(response, 200, { status: "ok" });
+      }
+
+      if (pathname === "/api/local/codex-thread-progress") {
+        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        if ([...url.searchParams.keys()].some((key) => key !== "threadId")) {
+          throw new ApiError(400, "UNKNOWN_QUERY_PARAMETER", "Only 'threadId' is supported");
+        }
+        const threadIds = [...new Set(url.searchParams.getAll("threadId").map((value) => (
+          value.trim().replace(/^(?:local|cloud):/i, "")
+        )))];
+        if (threadIds.length > 64 || threadIds.some((threadId) => (
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(threadId)
+        ))) {
+          throw new ApiError(400, "INVALID_FIELD", "'threadId' must contain valid Codex thread IDs");
+        }
+        const entries = await Promise.all(threadIds.map(async (threadId) => (
+          [threadId, await readCodexSessionState(threadId)]
+        )));
+        return sendJson(response, 200, { progress: Object.fromEntries(entries) });
       }
 
       if (pathname === "/api/local/host-runtime") {
@@ -1566,6 +1722,16 @@ export function createTaskboardServer(options = {}) {
         assertAllowedQuery(url.searchParams, new Set(["projectId"]), "GET /api/local/ai/catalog");
         const projectId = validateProjectId(url.searchParams.get("projectId") ?? undefined);
         return sendJson(response, 200, await aiChat.getCatalog(projectId));
+      }
+
+      const projectSummaryRoute = pathname.match(/^\/api\/local\/projects\/([^/]+)\/summary$/);
+      if (projectSummaryRoute) {
+        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        assertNoQuery(url.searchParams, "GET /api/local/projects/:id/summary");
+        const projectId = validateProjectId(
+          decodeRouteSegment(projectSummaryRoute[1], "Project id"),
+        );
+        return sendJson(response, 200, projectSummary.get(projectId));
       }
 
       if (pathname === "/api/local/ai/threads") {
@@ -2195,6 +2361,7 @@ export function createTaskboardServer(options = {}) {
       for (const response of aiEventResponses) response.end();
       aiEventResponses.clear();
       await aiChat.close();
+      await projectSummary.close();
       await serverClosed;
       listening = false;
       database.close();

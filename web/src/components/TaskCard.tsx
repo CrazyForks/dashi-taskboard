@@ -1,13 +1,24 @@
-import type { CSSProperties } from "react";
-import type { ActorIdentity, Task } from "../types";
+import { useState } from "react";
+import { attachmentContentUrl } from "../api";
+import type { ActorIdentity, Task, TaskPriority } from "../types";
 import { labelPresentation } from "../labels";
 import type {
   TaskCardPresentation,
   TaskConversationItem,
 } from "../taskConversations";
 import { ActorAvatar } from "./ActorAvatar";
+import { LinearPriorityIcon } from "./LinearIcon";
 import { TaskConversationMenu } from "./TaskConversationMenu";
 import { TaskboardIcon } from "./TaskboardIcon";
+import processingAnimation from "../assets/figma-taskboard/loading-16.svg";
+
+const PRIORITY_LABELS: Record<TaskPriority, string> = {
+  none: "无优先级",
+  urgent: "紧急",
+  high: "高",
+  medium: "中",
+  low: "低",
+};
 
 interface TaskCardProps {
   task: Task;
@@ -46,36 +57,105 @@ function elapsedTime(startedAt: string | null, now: number) {
   return `${hours}h${minutes % 60 ? `${minutes % 60}m` : ""}`;
 }
 
-function ProcessingStatus({
+function firstTaskImage(task: Task) {
+  const markdownImage = task.description.match(
+    /!\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+["'][^)]*["'])?\)/,
+  );
+  return markdownImage?.[1]
+    ?? markdownImage?.[2]
+    ?? (task.previewImage ? attachmentContentUrl(task.previewImage) : null);
+}
+
+function TaskCardMedia({ src }: { src: string }) {
+  const [clamped, setClamped] = useState(false);
+
+  return (
+    <div className={`task-card-media${clamped ? " is-clamped" : ""}`}>
+      <img
+        src={src}
+        alt=""
+        loading="lazy"
+        onLoad={(event) => {
+          setClamped(event.currentTarget.naturalWidth / event.currentTarget.naturalHeight < 3 / 4);
+        }}
+      />
+    </div>
+  );
+}
+
+function ProcessingProgress({
+  presentation,
+}: {
+  presentation: TaskCardPresentation;
+}) {
+  const { processing } = presentation;
+  const hasProgress = processing.total !== null
+    && processing.total > 0
+    && processing.completed !== null;
+  if (!hasProgress) return null;
+
+  const total = processing.total!;
+  const completed = Math.max(0, Math.min(processing.completed!, total));
+  const label = `处理进度 ${completed}/${total}`;
+
+  return (
+    <div className="card-progress-row">
+      <div
+        className={`task-progress-segments${processing.running ? " is-running" : ""}`}
+        aria-label={label}
+        title={label}
+      >
+        {Array.from({ length: total }, (_, index) => (
+          <span className={index < completed ? "is-complete" : ""} key={index} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProcessingStatusRow({
   presentation,
   now,
+  onOpenConversation,
 }: {
   presentation: TaskCardPresentation;
   now: number;
+  onOpenConversation: (conversation: TaskConversationItem) => void;
 }) {
-  const { processing } = presentation;
-  const hasTodo = processing.running
-    && processing.total !== null
-    && processing.total > 0
-    && processing.completed !== null;
-  const percent = hasTodo
-    ? Math.max(0, Math.min(100, Math.round((processing.completed! / processing.total!) * 100)))
-    : 0;
-  const elapsed = elapsedTime(processing.startedAt, now);
-  const label = processing.running
-    ? `正在处理${elapsed ? ` · ${elapsed}` : ""}…`
-    : "暂停处理";
-  const style = hasTodo
-    ? { "--task-progress": `${percent}%` } as CSSProperties
-    : undefined;
-
+  const elapsed = elapsedTime(presentation.processing.startedAt, now);
+  const running = presentation.processing.running;
   return (
-    <div className={`task-processing${processing.running ? " is-running" : " is-paused"}`}>
-      <span className="task-processing-ring" style={style} aria-hidden="true">
-        {hasTodo && <span>{percent}</span>}
+    <div className={`task-processing-row${running ? " is-running" : " is-paused"}`}>
+      {running && <img className="task-processing-glyph" src={processingAnimation} alt="" aria-hidden="true" />}
+      <span className="task-processing-label">
+        {running ? (elapsed ? `已处理 ${elapsed}...` : "正在处理...") : "暂停处理"}
       </span>
-      <span className="task-processing-label">{label}</span>
+      <span className="task-processing-spacer" aria-hidden="true" />
+      {presentation.conversations.length > 0 && (
+        <TaskConversationMenu
+          conversations={presentation.conversations}
+          onOpenConversation={onOpenConversation}
+        />
+      )}
     </div>
+  );
+}
+
+function ParticipantAvatars({ participants }: { participants: ActorIdentity[] }) {
+  if (participants.length === 0) return null;
+  return (
+    <span
+      className="task-participants"
+      aria-label={`参与人：${participants.map((participant) => participant.name).join("、")}`}
+    >
+      {participants.map((participant) => (
+        <ActorAvatar
+          actor={participant}
+          className="task-participant-avatar"
+          key={`${participant.type}:${participant.id}`}
+        />
+      ))}
+    </span>
   );
 }
 
@@ -106,6 +186,15 @@ function LabelsAndDueDate({ task }: { task: Task }) {
   );
 }
 
+function PriorityChip({ task }: { task: Task }) {
+  return (
+    <span className={`priority-chip priority-chip-${task.priority}`} title={`优先级：${PRIORITY_LABELS[task.priority]}`}>
+      <LinearPriorityIcon priority={task.priority} />
+      <span>{PRIORITY_LABELS[task.priority]}</span>
+    </span>
+  );
+}
+
 export function TaskCard({
   task,
   variant = "main",
@@ -128,12 +217,23 @@ export function TaskCard({
     name: task.creatorName,
     avatarUrl: task.creatorAvatarUrl,
   };
-  const processingCard = variant === "main" && task.status === "in_progress";
-  const showsConversation = ["in_progress", "in_review", "done", "canceled"].includes(task.status);
+  const processingCard = task.status === "in_progress";
+  const supportsConversation = task.status === "in_progress"
+    || task.status === "in_review"
+    || task.status === "blocked"
+    || task.status === "done"
+    || task.status === "canceled";
+  const showsConversation = supportsConversation && presentation.conversations.length > 0;
+  const showsInlineParticipants = variant === "main"
+    && task.participants.length > 0;
+  const image = firstTaskImage(task);
+  const hasProperties = task.priority !== "none" || task.labels.length > 0 || task.dueDate;
+  const showsProperties = !processingCard
+    && (hasProperties || showsInlineParticipants || showsConversation);
 
   return (
     <article
-      className={`task-card task-card-${variant} status-${task.status}${processingCard ? " is-processing-card" : ""}${presentation.unread ? " is-unread" : ""}${isDragging ? " is-dragging" : ""}${dragShift ? " is-drag-shifted" : ""}${isMoving ? " is-moving" : ""}${isSettling ? " is-settling" : ""}${isContextMenuOpen ? " is-context-open" : ""}`}
+      className={`task-card task-card-${variant} status-${task.status}${processingCard ? " is-processing-card" : ""}${processingCard && presentation.processing.running ? " is-running-card" : ""}${image ? " has-media" : ""}${presentation.unread ? " is-unread" : ""}${isDragging ? " is-dragging" : ""}${dragShift ? " is-drag-shifted" : ""}${isMoving ? " is-moving" : ""}${isSettling ? " is-settling" : ""}${isContextMenuOpen ? " is-context-open" : ""}`}
       style={dragShift ? { transform: `translate3d(0, ${dragShift}px, 0)` } : undefined}
       draggable={!isMoving}
       aria-labelledby={`task-${task.id}-title`}
@@ -161,12 +261,12 @@ export function TaskCard({
 
       <div className="card-topline">
         <span className="card-reference">
-          <span className="task-identifier">{task.identifier}</span>
+          <span className="task-identifier">ID: {task.identifier}</span>
         </span>
         {presentation.unread && <span className="task-unread-dot" aria-label="有未读更新" />}
         {variant === "sidebar" && (
           <span className="sidebar-card-creator">
-            <ActorAvatar actor={creator} className="card-creator-avatar" />
+            <ParticipantAvatars participants={task.participants.length ? task.participants : [creator]} />
             <span>{createdDate(task.createdAt)}</span>
           </span>
         )}
@@ -174,19 +274,16 @@ export function TaskCard({
 
       <h3 id={`task-${task.id}-title`}>{task.title}</h3>
 
-      {processingCard ? (
-        <div className="card-processing-row">
-          <ProcessingStatus presentation={presentation} now={now} />
-          {showsConversation && (
-            <TaskConversationMenu
-              conversations={presentation.conversations}
-              onOpenConversation={onOpenConversation}
-            />
-          )}
-        </div>
-      ) : (
+      {image && (
+        <TaskCardMedia key={image} src={image} />
+      )}
+
+      {showsProperties && (
         <div className="card-properties" aria-label="议题属性">
+          {task.priority !== "none" && <PriorityChip task={task} />}
           <LabelsAndDueDate task={task} />
+          {showsInlineParticipants && <ParticipantAvatars participants={task.participants} />}
+          {showsConversation && <span className="card-properties-spacer" aria-hidden="true" />}
           {showsConversation && (
             <TaskConversationMenu
               conversations={presentation.conversations}
@@ -194,6 +291,17 @@ export function TaskCard({
             />
           )}
         </div>
+      )}
+
+      {processingCard && (
+        <>
+          <ProcessingProgress presentation={presentation} />
+          <ProcessingStatusRow
+            presentation={presentation}
+            now={now}
+            onOpenConversation={onOpenConversation}
+          />
+        </>
       )}
     </article>
   );

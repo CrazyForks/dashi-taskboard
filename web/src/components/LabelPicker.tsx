@@ -10,6 +10,7 @@ interface LabelPickerProps {
   className?: string;
   triggerClassName: string;
   showIcon?: boolean;
+  showSelectedAsChips?: boolean;
   placeholder?: string;
   onOpenChange: (open: boolean) => void;
   onChange: (labels: string[]) => void;
@@ -23,6 +24,7 @@ export function LabelPicker({
   className = "",
   triggerClassName,
   showIcon = false,
+  showSelectedAsChips = false,
   placeholder = "标签",
   onOpenChange,
   onChange,
@@ -86,7 +88,24 @@ export function LabelPicker({
         onClick={() => onOpenChange(!open)}
       >
         {showIcon && <LinearIcon name="label" />}
-        <span>{selectedLabels.length > 0 ? selectedLabels.map(labelDisplayName).join(", ") : placeholder}</span>
+        {selectedLabels.length > 0 && showSelectedAsChips ? (
+          <span className="label-trigger-chips">
+            {selectedLabels.slice(0, 2).map((label) => {
+              const presentation = labelPresentation(label);
+              return (
+                <span className="label-trigger-chip" key={label}>
+                  {presentation.tone && <i style={{ background: presentation.color }} />}
+                  {presentation.name}
+                </span>
+              );
+            })}
+            {selectedLabels.length > 2 && (
+              <span className="label-trigger-chip">+{selectedLabels.length - 2}</span>
+            )}
+          </span>
+        ) : (
+          <span>{selectedLabels.length > 0 ? selectedLabels.map(labelDisplayName).join(", ") : placeholder}</span>
+        )}
       </button>
       {open && (
         <div className="composer-popover label-popover" role="dialog" aria-label="选择或创建标签">

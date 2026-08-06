@@ -126,6 +126,7 @@ export function TaskEditor({
   const [selectedLabels, setSelectedLabels] = useState<string[]>(task?.labels ?? []);
   const [workflowId, setWorkflowId] = useState(task?.workflowId ?? "");
   const [developmentContext, setDevelopmentContext] = useState<DevelopmentContext | null>(task?.developmentContext ?? null);
+  const [startDate] = useState(task?.startDate ?? "");
   const [dueDate, setDueDate] = useState(task?.dueDate ?? "");
   const [recurrence, setRecurrence] = useState<Recurrence | null>(task?.recurrence ?? null);
   const [menu, setMenu] = useState<"labels" | "more" | "due" | "recurrence" | null>(null);
@@ -189,6 +190,7 @@ export function TaskEditor({
         ...(assigneeTarget ? { assigneeTarget } : {}),
         workflowId: workflowId || null,
         developmentContext,
+        startDate: startDate || null,
         dueDate: dueDate || null,
         recurrence,
       }, attachments, inlineMediaImages(descriptionSegments));

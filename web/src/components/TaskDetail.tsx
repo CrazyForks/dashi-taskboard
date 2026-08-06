@@ -35,9 +35,9 @@ import {
   assigneeTargetForActor,
 } from "../actors";
 import { ActorAvatar } from "./ActorAvatar";
-import { STATUS_DETAILS } from "./BoardColumn";
+import { STATUS_DETAILS, StatusIcon } from "./BoardColumn";
 import { LabelPicker } from "./LabelPicker";
-import { LinearIcon, LinearPriorityIcon, LinearStatusIcon } from "./LinearIcon";
+import { LinearIcon, LinearPriorityIcon } from "./LinearIcon";
 import {
   fileKey,
   MAX_ATTACHMENT_SIZE,
@@ -94,7 +94,6 @@ interface TaskDetailProps {
   onOpenInThread: (task: Task) => void;
   openingThread: boolean;
   onError: (message: string | null) => void;
-  onAnnounce: (message: string) => void;
 }
 
 function messageFor(error: unknown): string {
@@ -200,11 +199,13 @@ export function TaskDetail({
   onOpenInThread,
   openingThread,
   onError,
-  onAnnounce,
 }: TaskDetailProps) {
   const [currentTask, setCurrentTask] = useState(task);
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
+  const [descriptionSegments, setDescriptionSegments] = useState<InlineMediaSegment[]>(
+    () => createInlineMediaSegments(task.description),
+  );
   const [editingDescription, setEditingDescription] = useState(false);
   const [labelMenuOpen, setLabelMenuOpen] = useState(false);
   const [savingProperty, setSavingProperty] = useState<string | null>(null);
@@ -231,7 +232,7 @@ export function TaskDetail({
   const [pendingDelete, setPendingDelete] = useState<Comment | null>(null);
   const [deleting, setDeleting] = useState(false);
   const titleRef = useRef<HTMLTextAreaElement>(null);
-  const descriptionRef = useRef<HTMLTextAreaElement>(null);
+  const descriptionComposerRef = useRef<InlineMediaComposerHandle>(null);
   const composerRef = useRef<InlineMediaComposerHandle>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const commentAttachmentInputRef = useRef<HTMLInputElement>(null);
@@ -241,21 +242,24 @@ export function TaskDetail({
   const commentInlineImages = inlineMediaImages(commentSegments);
 
   useEffect(() => {
+    const taskChanged = currentTask.id !== task.id;
     setCurrentTask(task);
     if (document.activeElement !== titleRef.current) setTitle(task.title);
-    if (document.activeElement !== descriptionRef.current) setDescription(task.description);
+    if (taskChanged || !editingDescription) {
+      setDescription(task.description);
+      setDescriptionSegments(createInlineMediaSegments(task.description));
+    }
+    if (taskChanged) setEditingDescription(false);
   }, [task]);
 
   useEffect(() => {
     resizeTextarea(titleRef.current);
-    resizeTextarea(descriptionRef.current);
-  }, [title, description, editingDescription]);
+  }, [title]);
 
   useEffect(() => {
     if (!editingDescription) return;
     requestAnimationFrame(() => {
-      descriptionRef.current?.focus();
-      resizeTextarea(descriptionRef.current);
+      descriptionComposerRef.current?.focus();
     });
   }, [editingDescription]);
 
@@ -338,7 +342,6 @@ export function TaskDetail({
       setCurrentTask(saved);
       setTitle(saved.title);
       setDescription(saved.description);
-      onAnnounce(`${saved.identifier} 已更新。`);
       return saved;
     } catch (error) {
       onError(messageFor(error));
@@ -395,9 +398,39 @@ export function TaskDetail({
   }
 
   async function saveDescription() {
-    const normalized = description.trim();
-    if (normalized === currentTask.description) return;
-    await saveTask({ description: normalized }, "description");
+    if (savingProperty === "description") return;
+    const draftDescription = serializeInlineMedia(descriptionSegments).trim();
+    const inlineImages = inlineMediaImages(descriptionSegments);
+    if (draftDescription === currentTask.description && inlineImages.length === 0) {
+      setEditingDescription(false);
+      return;
+    }
+
+    setSavingProperty("description");
+    onError(null);
+    try {
+      const uploaded = await Promise.all(
+        inlineImages.map((image) => uploadAttachment(currentTask.id, image.file)),
+      );
+      const resolvedDescription = resolveInlineMediaMarkdown(
+        draftDescription,
+        inlineImages,
+        uploaded,
+      ).trim();
+      const saved = await onUpdate(currentTask, { description: resolvedDescription });
+      setCurrentTask(saved);
+      setDescription(saved.description);
+      setDescriptionSegments(createInlineMediaSegments(saved.description));
+      setAttachments((current) => [
+        ...current,
+        ...uploaded.filter((attachment) => !current.some((item) => item.id === attachment.id)),
+      ]);
+      setEditingDescription(false);
+    } catch (error) {
+      onError(messageFor(error));
+    } finally {
+      setSavingProperty(null);
+    }
   }
 
   async function submitComment() {
@@ -428,11 +461,6 @@ export function TaskDetail({
       if (commentAttachmentInputRef.current) commentAttachmentInputRef.current.value = "";
       const failed = results.length - uploaded.length;
       if (failed > 0) setCommentsError(`评论已发布，但有 ${failed} 个附件上传失败。`);
-      else onAnnounce(
-        uploaded.length + inlineAttachments.length > 0
-          ? "评论和附件已发布。"
-          : "评论已发布。",
-      );
       requestAnimationFrame(() => composerRef.current?.focus());
     } catch (error) {
       setCommentsError(messageFor(error));
@@ -481,7 +509,6 @@ export function TaskDetail({
       const updated = await updateComment(comment, body);
       setComments((current) => current.map((item) => item.id === updated.id ? updated : item));
       setEditingId(null);
-      onAnnounce("评论已更新。");
     } catch (error) {
       setCommentsError(messageFor(error));
     } finally {
@@ -497,7 +524,6 @@ export function TaskDetail({
       await deleteComment(pendingDelete);
       setComments((current) => current.filter((comment) => comment.id !== pendingDelete.id));
       setPendingDelete(null);
-      onAnnounce("评论已删除。");
     } catch (error) {
       setCommentsError(messageFor(error));
     } finally {
@@ -517,16 +543,13 @@ export function TaskDetail({
 
     setUploadingAttachments(true);
     setAttachmentsError(null);
-    let uploaded = 0;
     try {
       for (const file of selected) {
         const attachment = await uploadAttachment(task.id, file);
         setAttachments((current) => current.some((item) => item.id === attachment.id)
           ? current
           : [...current, attachment]);
-        uploaded += 1;
       }
-      onAnnounce(uploaded === 1 ? "附件已上传。" : `${uploaded} 个附件已上传。`);
     } catch (error) {
       setAttachmentsError(messageFor(error));
     } finally {
@@ -547,7 +570,6 @@ export function TaskDetail({
         attachments: comment.attachments.filter((attachment) => attachment.id !== pendingAttachmentDelete.id),
       })));
       setPendingAttachmentDelete(null);
-      onAnnounce("附件已删除。");
     } catch (error) {
       setAttachmentsError(messageFor(error));
     } finally {
@@ -603,39 +625,44 @@ export function TaskDetail({
                   )}
                 />
                 {editingDescription ? (
-                  <textarea
-                    ref={descriptionRef}
-                    className="issue-description-input"
-                    rows={1}
-                    value={description}
-                    aria-label="议题描述"
-                    placeholder="添加描述…"
-                    disabled={savingProperty === "description"}
-                    onChange={(event) => {
-                      setDescription(event.target.value);
-                      resizeTextarea(event.currentTarget);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape") {
-                        setDescription(currentTask.description);
-                        setEditingDescription(false);
-                      }
-                    }}
-                    onBlur={() => {
-                      setEditingDescription(false);
+                  <div
+                    className="issue-description-composer"
+                    onBlur={(event) => {
+                      if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
                       void saveDescription();
                     }}
-                  />
+                  >
+                    <InlineMediaComposer
+                      ref={descriptionComposerRef}
+                      segments={descriptionSegments}
+                      placeholder="添加描述…"
+                      ariaLabel="议题描述"
+                      disabled={savingProperty === "description"}
+                      onChange={setDescriptionSegments}
+                      onError={onError}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          setDescriptionSegments(createInlineMediaSegments(currentTask.description));
+                          setEditingDescription(false);
+                        }
+                      }}
+                    />
+                  </div>
                 ) : (
                   <div
                     className={`issue-description-read${description ? "" : " empty"}`}
                     role="button"
                     tabIndex={0}
                     aria-label="编辑议题描述"
-                    onClick={() => setEditingDescription(true)}
+                    onClick={() => {
+                      setDescriptionSegments(createInlineMediaSegments(description));
+                      setEditingDescription(true);
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
+                        setDescriptionSegments(createInlineMediaSegments(description));
                         setEditingDescription(true);
                       }
                     }}
@@ -969,12 +996,12 @@ export function TaskDetail({
               disabled={openingThread}
               onClick={() => onOpenInThread(currentTask)}
             >
-              <LinearIcon name="conversation" />
+              <ActorAvatar actor={CODEX_AGENT_ACTOR} className="detail-thread-avatar" />
               <span>{openingThread ? "正在打开…" : "在对话中打开"}</span>
             </button>
             <h2>属性</h2>
             <label className="detail-property-row">
-              <span className={`detail-property-icon status-icon-${STATUS_DETAILS[currentTask.status].tone}`}><LinearStatusIcon status={currentTask.status} /></span>
+              <span className={`detail-property-icon status-icon-${STATUS_DETAILS[currentTask.status].tone}`}><StatusIcon status={currentTask.status} /></span>
               <span className="detail-property-label">状态</span>
               <select
                 value={currentTask.status}
@@ -1033,6 +1060,7 @@ export function TaskDetail({
                 disabled={savingProperty === "labels"}
                 className="detail-label-picker"
                 triggerClassName="detail-label-trigger"
+                showSelectedAsChips
                 placeholder="添加标签…"
                 onOpenChange={setLabelMenuOpen}
                 onChange={(nextLabels) => void saveTask({ labels: nextLabels }, "labels")}
@@ -1084,6 +1112,18 @@ export function TaskDetail({
                   ))}
                 </optgroup>
               </select>
+            </label>
+            <label className="detail-property-row">
+              <span className="detail-property-icon" aria-hidden="true"><LinearIcon name="calendar" /></span>
+              <span className="detail-property-label">开始日期</span>
+              <input
+                type="date"
+                value={currentTask.startDate ?? ""}
+                disabled={savingProperty === "startDate"}
+                onChange={(event) => void saveTask({
+                  startDate: event.target.value || null,
+                }, "startDate")}
+              />
             </label>
             <label className="detail-property-row">
               <span className="detail-property-icon" aria-hidden="true"><LinearIcon name="calendar" /></span>

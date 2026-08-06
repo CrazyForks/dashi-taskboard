@@ -53,10 +53,15 @@ import type {
 import { LinearIcon, type LinearIconName } from "./LinearIcon";
 import { TaskboardIcon } from "./TaskboardIcon";
 
-export interface AiChatOpenThreadRequest {
+export type AiChatOpenThreadRequest = {
   threadId: string;
   requestId: number;
-}
+} | {
+  projectId: string;
+  issueId: string | null;
+  composerText: string;
+  requestId: number;
+};
 
 interface AiChatProps {
   available: boolean;
@@ -973,6 +978,7 @@ export function AiChat({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [requestedComposerText, setRequestedComposerText] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [skillIds, setSkillIds] = useState<string[]>([]);
   const [skillMention, setSkillMention] = useState<ComposerSkillQuery | null>(null);
@@ -1438,12 +1444,30 @@ export function AiChat({
     setSkillMention(null);
     setPendingDangerInput(null);
     setAttachmentDragActive(false);
+    setRequestedComposerText(null);
     skillMentionRangeRef.current = null;
   }
 
   useEffect(() => {
     if (!available || !openThreadRequest) return;
     if (handledOpenThreadRequestRef.current === openThreadRequest.requestId) return;
+    if ("composerText" in openThreadRequest) {
+      handledOpenThreadRequestRef.current = openThreadRequest.requestId;
+      if (!draftOrigin) draftReturnThreadIdRef.current = selectedThreadRef.current;
+      resetComposer();
+      setDraftOrigin({
+        projectId: openThreadRequest.projectId,
+        issueId: openThreadRequest.issueId,
+      });
+      setSnapshot(null);
+      selectThread(null);
+      setHistoryOpen(false);
+      setMenu(null);
+      setError(null);
+      setRequestedComposerText(openThreadRequest.composerText);
+      setPanelOpen(true);
+      return;
+    }
     if (!threads.some((thread) => thread.id === openThreadRequest.threadId)) return;
     handledOpenThreadRequestRef.current = openThreadRequest.requestId;
     const selectedChanged = selectedThreadRef.current !== openThreadRequest.threadId;
@@ -1466,12 +1490,26 @@ export function AiChat({
     available,
     draftOrigin,
     loadSnapshot,
-    openThreadRequest?.requestId,
-    openThreadRequest?.threadId,
+    openThreadRequest,
     selectThread,
     snapshot?.thread.id,
     threads,
   ]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!panelOpen || requestedComposerText === null || !editor) return;
+    editor.replaceChildren(document.createTextNode(requestedComposerText));
+    setDraft(requestedComposerText);
+    setRequestedComposerText(null);
+    editor.focus();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, [panelOpen, requestedComposerText]);
 
   function restorePersistedConversationFromDraft() {
     if (!draftOrigin) return;
