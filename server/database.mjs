@@ -601,9 +601,14 @@ export class TaskboardDatabase {
     const timestamp = now();
     this.database.prepare(`
       INSERT INTO projects (id, name, workspace_path, next_task_number, created_at, updated_at)
-      VALUES ('local', 'Local', NULL, 1, ?, ?)
+      VALUES ('local', '全局', NULL, 1, ?, ?)
       ON CONFLICT(id) DO NOTHING
     `).run(timestamp, timestamp);
+    this.database.prepare(`
+      UPDATE projects
+      SET name = '全局', workspace_path = NULL, updated_at = ?
+      WHERE id = 'local' AND (name != '全局' OR workspace_path IS NOT NULL)
+    `).run(timestamp);
   }
 
   close() {
