@@ -1840,10 +1840,6 @@ export function App() {
   }
 
   function openTaskInThread(task: Task) {
-    if (!manageTaskboardSkillPath) {
-      setActionError("任务面板还没有读取到 manage-taskboard Skill 路径，请刷新后重试。");
-      return;
-    }
     const worktreePath = task.developmentContext?.type === "worktree"
       ? task.developmentContext.path
       : null;
@@ -1851,13 +1847,12 @@ export function App() {
       ?? selectedDeviceWorkspacePath
       ?? developmentScan.workspacePath
       ?? hostContext?.workspacePath;
-    const instruction = `e-taskboard Addressing the issues mentioned in ${task.identifier}`;
-    const prompt = `[$manage-taskboard](${manageTaskboardSkillPath}) ${instruction}`;
+    const instruction = `e-taskboard 处理任务面板任务 ${task.identifier}，并同步进度状态。`;
 
     if (!embedded || window.parent === window) {
       const query = new URLSearchParams();
       if (workspacePath) query.set("path", workspacePath);
-      query.set("prompt", prompt);
+      query.set("prompt", instruction);
       window.location.assign(`codex://new?${query.toString().replace(/\+/g, "%20")}`);
       return;
     }
@@ -1871,9 +1866,6 @@ export function App() {
         taskId: task.id,
         identifier: task.identifier,
         instruction,
-        skillName: "manage-taskboard",
-        skillDisplayName: "Manage Taskboard",
-        skillPath: manageTaskboardSkillPath,
         codexProjectId: codexProject?.id ?? (selectedProject?.id === "local" ? hostContext?.projectId : selectedProject?.id),
         projectName: selectedProject?.name,
         workspacePath,

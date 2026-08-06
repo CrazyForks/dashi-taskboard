@@ -795,29 +795,17 @@ async function restoreQuotaPolicies(cdp) {
 }
 
 async function prefillTaskComposerViaCdp(cdp, executionContextId, request) {
-  const {
-    instruction,
-    skillDisplayName,
-    skillName,
-    skillPath,
-  } = request;
+  const { instruction } = request;
   const deadline = Date.now() + 8_000;
   while (Date.now() < deadline) {
     const prepared = await cdp.send("Runtime.evaluate", {
       expression: `(() => {
         const instruction = ${JSON.stringify(instruction)};
-        const skillName = ${JSON.stringify(skillName)};
-        const skillPath = ${JSON.stringify(skillPath)};
         const editor = Array.from(document.querySelectorAll(
           '[data-codex-composer="true"][contenteditable="true"]'
         )).find((candidate) => candidate.getClientRects().length > 0);
         if (!editor) return { ready: false };
-        const mention = Array.from(editor.querySelectorAll("[skill-mention-name]"))
-          .find((candidate) => (
-            candidate.getAttribute("skill-mention-name") === skillName
-            && candidate.getAttribute("skill-mention-path") === skillPath
-          ));
-        if (mention && (editor.textContent || "").includes(instruction)) {
+        if ((editor.textContent || "").includes(instruction)) {
           return { ready: true, matches: true };
         }
         editor.focus();
@@ -837,89 +825,18 @@ async function prefillTaskComposerViaCdp(cdp, executionContextId, request) {
     }
     if (prepared.result.value.matches) return { prefilled: true };
 
-    await cdp.send("Input.insertText", { text: "$" });
+    await cdp.send("Input.insertText", { text: instruction });
     break;
   }
 
-  let selectedSkill = false;
-  while (Date.now() < deadline) {
-    const selection = await cdp.send("Runtime.evaluate", {
-      expression: `(() => {
-        const displayName = ${JSON.stringify(skillDisplayName)};
-        const overlay = Array.from(document.querySelectorAll(
-          '[data-composer-overlay-floating-ui="true"]'
-        )).find((candidate) => candidate.getClientRects().length > 0);
-        if (!overlay) return { ready: false };
-        const button = Array.from(overlay.querySelectorAll(
-          'button[data-list-navigation-item="true"]'
-        )).find((candidate) => Array.from(candidate.querySelectorAll("span"))
-          .some((label) => (label.textContent || "").trim() === displayName));
-        if (!button) return { ready: true, found: false };
-        button.click();
-        return { ready: true, found: true };
-      })()`,
-      contextId: executionContextId,
-      returnByValue: true,
-    });
-    if (selection.result.value?.found) {
-      selectedSkill = true;
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 80));
-  }
-  if (!selectedSkill) {
-    throw new Error(`Timed out while selecting the ${skillDisplayName} Skill`);
-  }
-
-  let mentionReady = false;
-  while (Date.now() < deadline) {
-    const mention = await cdp.send("Runtime.evaluate", {
-      expression: `(() => {
-        const skillName = ${JSON.stringify(skillName)};
-        const skillPath = ${JSON.stringify(skillPath)};
-        const editor = Array.from(document.querySelectorAll(
-          '[data-codex-composer="true"][contenteditable="true"]'
-        )).find((candidate) => candidate.getClientRects().length > 0);
-        if (!editor) return { ready: false };
-        const selected = Array.from(editor.querySelectorAll("[skill-mention-name]"))
-          .find((candidate) => candidate.getAttribute("skill-mention-name") === skillName);
-        return {
-          ready: Boolean(selected),
-          pathMatches: selected?.getAttribute("skill-mention-path") === skillPath,
-        };
-      })()`,
-      contextId: executionContextId,
-      returnByValue: true,
-    });
-    if (mention.result.value?.ready) {
-      if (!mention.result.value.pathMatches) {
-        throw new Error(`Codex selected a different ${skillDisplayName} Skill`);
-      }
-      mentionReady = true;
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 80));
-  }
-  if (!mentionReady) {
-    throw new Error(`Timed out while creating the ${skillDisplayName} Skill mention`);
-  }
-
-  await cdp.send("Input.insertText", { text: instruction });
   while (Date.now() < deadline) {
     const verified = await cdp.send("Runtime.evaluate", {
       expression: `(() => {
         const instruction = ${JSON.stringify(instruction)};
-        const skillName = ${JSON.stringify(skillName)};
-        const skillPath = ${JSON.stringify(skillPath)};
         const editor = Array.from(document.querySelectorAll(
           '[data-codex-composer="true"][contenteditable="true"]'
         )).find((candidate) => candidate.getClientRects().length > 0);
-        const mention = editor && Array.from(editor.querySelectorAll("[skill-mention-name]"))
-          .find((candidate) => (
-            candidate.getAttribute("skill-mention-name") === skillName
-            && candidate.getAttribute("skill-mention-path") === skillPath
-          ));
-        return Boolean(mention && (editor.textContent || "").includes(instruction));
+        return Boolean(editor && (editor.textContent || "").includes(instruction));
       })()`,
       contextId: executionContextId,
       returnByValue: true,
