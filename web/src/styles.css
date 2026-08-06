@@ -10732,8 +10732,6 @@ kbd {
 .issue-list-row:hover,
 .issue-list-row:focus-visible { background: var(--surface-hover); }
 .issue-list-row:focus-visible { box-shadow: inset 2px 0 var(--accent); }
-.issue-list-row.is-unread { background: color-mix(in srgb, #317cff 2.4%, transparent); }
-.issue-list-row.is-unread:hover { background: color-mix(in srgb, #317cff 4%, var(--surface)); }
 
 .issue-list-title-cell {
   display: flex;
