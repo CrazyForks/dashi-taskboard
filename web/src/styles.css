@@ -4226,8 +4226,8 @@ kbd {
   align-items: center;
   min-width: 0;
   width: 100%;
-  height: 26px;
-  padding: 0 9px 0 33px;
+  min-height: 26px;
+  padding: 2px 9px 2px 33px;
   border: 0;
   outline: 0;
   background: transparent;
@@ -4246,9 +4246,11 @@ kbd {
 .detail-label-trigger .label-trigger-chips {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   min-width: 0;
   gap: 5px;
-  overflow: hidden;
+  overflow: visible;
+  white-space: normal;
 }
 
 .detail-label-trigger .label-trigger-chip {

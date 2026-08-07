@@ -93,7 +93,7 @@ export function LabelPicker({
           {showIcon && <LinearIcon name="label" />}
           {selectedLabels.length > 0 && showSelectedAsChips ? (
             <span className="label-trigger-chips">
-              {selectedLabels.slice(0, 2).map((label) => {
+              {selectedLabels.map((label) => {
                 const presentation = labelPresentation(label);
                 return (
                   <span className="label-trigger-chip" key={label}>
@@ -102,9 +102,6 @@ export function LabelPicker({
                   </span>
                 );
               })}
-              {selectedLabels.length > 2 && (
-                <span className="label-trigger-chip">+{selectedLabels.length - 2}</span>
-              )}
             </span>
           ) : (
             <span>{selectedLabels.length > 0 ? selectedLabels.map(labelDisplayName).join(", ") : placeholder}</span>
