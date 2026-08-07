@@ -93,6 +93,8 @@ Use `issue move` to set `in_progress` before implementation and `in_review` afte
 
 Use either `--git-branch` or `--worktree-path`/`--worktree-branch`; an issue has only one development context. Issue JSON stores it as `developmentContext`, either `{ "type": "branch", "branch": "..." }` or `{ "type": "worktree", "path": "...", "branch": "..." }`. Its singular `threadId` is the Codex conversation that most recently created or changed the issue itself. Recurrence requires a due date.
 
+Changing only `--project` preserves the issue's existing linked conversation.
+
 ## Issue relations
 
 Read the anchor issue immediately before adding or removing a relation and use its current version. Relation writes require Codex conversation attribution like every other issue write.

@@ -1308,7 +1308,7 @@ export class TaskboardDatabase {
       assignments.push("sort_order = ?");
       values.push(row.minimum === null ? 1000 : row.minimum - 1000);
     }
-    if (threadId !== undefined) {
+    if (threadId !== undefined && !Object.hasOwn(changes, "projectId")) {
       assignments.push("thread_id = ?");
       values.push(threadId);
     }
