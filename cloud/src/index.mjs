@@ -955,6 +955,7 @@ function parseTaskPatch(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
     "version",
+    "projectId",
     "title",
     "description",
     "status",
@@ -969,6 +970,7 @@ function parseTaskPatch(body) {
     "recurrence",
   ]));
   const changes = {};
+  if (body.projectId !== undefined) changes.projectId = validateProjectId(body.projectId);
   if (body.title !== undefined) {
     changes.title = stringField(body.title, "title", { required: true, maxLength: 240 });
   }
@@ -1378,6 +1380,9 @@ async function updateTask(env, id, input, actor) {
   const current = await requireTaskRow(env, id);
   assertTaskVersion(current, input.version);
   const currentTask = taskFromRow(current);
+  const targetProject = Object.hasOwn(input.changes, "projectId")
+    ? await requireProject(env, input.changes.projectId)
+    : null;
   const activityValues = { ...input.changes };
   const dueDate = Object.hasOwn(input.changes, "dueDate")
     ? input.changes.dueDate
@@ -1392,6 +1397,7 @@ async function updateTask(env, id, input, actor) {
   const assignments = [];
   const values = [];
   const columns = {
+    projectId: "project_id",
     title: "title",
     description: "description",
     status: "status",
@@ -1413,12 +1419,17 @@ async function updateTask(env, id, input, actor) {
       values.push(key === "labels" ? JSON.stringify(value) : value);
     }
   }
-  if (Object.hasOwn(input.changes, "status") && input.changes.status !== currentTask.status) {
+  const projectChanged = targetProject && targetProject.id !== currentTask.projectId;
+  const statusChanged = Object.hasOwn(input.changes, "status")
+    && input.changes.status !== currentTask.status;
+  if (projectChanged || statusChanged) {
+    const targetProjectId = targetProject?.id ?? currentTask.projectId;
+    const targetStatus = input.changes.status ?? currentTask.status;
     const row = await env.DB.prepare(`
       SELECT MIN(sort_order) AS minimum
       FROM tasks
       WHERE project_id = ? AND status = ? AND archived_at IS NULL AND id != ?
-    `).bind(current.project_id, input.changes.status, current.id).first();
+    `).bind(targetProjectId, targetStatus, current.id).first();
     assignments.push("sort_order = ?");
     values.push(row?.minimum == null ? 1000 : row.minimum - 1000);
   }
@@ -1433,7 +1444,7 @@ async function updateTask(env, id, input, actor) {
     );
     values.push(assignee.type, assignee.id, assignee.name, assignee.avatarUrl);
   }
-  if (input.threadId !== undefined) {
+  if (input.threadId !== undefined && !Object.hasOwn(input.changes, "projectId")) {
     assignments.push("thread_id = ?");
     values.push(input.threadId);
   }
@@ -1454,6 +1465,23 @@ async function updateTask(env, id, input, actor) {
       activityChanges,
       timestamp,
       input.version + 1,
+    ));
+  }
+  if (projectChanged) {
+    statements.push(env.DB.prepare(`
+      UPDATE projects
+      SET updated_at = ?
+      WHERE id IN (?, ?)
+        AND EXISTS (
+          SELECT 1 FROM tasks WHERE id = ? AND version = ? AND updated_at = ?
+        )
+    `).bind(
+      timestamp,
+      currentTask.projectId,
+      targetProject.id,
+      current.id,
+      input.version + 1,
+      timestamp,
     ));
   }
   const results = await env.DB.batch(statements);
