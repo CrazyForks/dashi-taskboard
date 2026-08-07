@@ -554,7 +554,7 @@
 }
 
 .dashboard-view .dashboard-priority-row {
-  --priority-color: #9e9ea1;
+  --priority-color: var(--priority-none);
   display: grid;
   grid-template-columns: 86px minmax(80px, 1fr) 32px;
   align-items: center;
@@ -562,11 +562,11 @@
   gap: 12px;
 }
 
-.dashboard-view .dashboard-priority-row.priority-urgent { --priority-color: #f34e52; }
-.dashboard-view .dashboard-priority-row.priority-high { --priority-color: #f0bf00; }
-.dashboard-view .dashboard-priority-row.priority-medium,
-.dashboard-view .dashboard-priority-row.priority-low,
-.dashboard-view .dashboard-priority-row.priority-none { --priority-color: #9e9ea1; }
+.dashboard-view .dashboard-priority-row.priority-urgent { --priority-color: var(--priority-urgent); }
+.dashboard-view .dashboard-priority-row.priority-high { --priority-color: var(--priority-high); }
+.dashboard-view .dashboard-priority-row.priority-medium { --priority-color: var(--priority-medium); }
+.dashboard-view .dashboard-priority-row.priority-low { --priority-color: var(--priority-low); }
+.dashboard-view .dashboard-priority-row.priority-none { --priority-color: var(--priority-none); }
 
 .dashboard-view .dashboard-priority-name {
   display: flex;
@@ -579,7 +579,7 @@
   line-height: 17px;
 }
 
-.dashboard-view .dashboard-priority-name img {
+.dashboard-view .dashboard-priority-name svg {
   display: block;
   width: 13px;
   height: 13px;

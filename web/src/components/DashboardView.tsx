@@ -3,11 +3,6 @@ import { useEffect, useRef, useState } from "react";
 import "./DashboardView.css";
 import dueDoneIcon from "../assets/figma-taskboard/dashboard-due-done.svg";
 import dueEditIcon from "../assets/figma-taskboard/dashboard-due-edit.svg";
-import priorityHighIcon from "../assets/figma-taskboard/dashboard-priority-high.svg";
-import priorityLowIcon from "../assets/figma-taskboard/dashboard-priority-low.svg";
-import priorityMediumIcon from "../assets/figma-taskboard/dashboard-priority-medium.svg";
-import priorityNoneIcon from "../assets/figma-taskboard/dashboard-priority-none.svg";
-import priorityUrgentIcon from "../assets/figma-taskboard/dashboard-priority-urgent.svg";
 import processingAnimation from "../assets/figma-taskboard/loading-16.svg";
 import { getProjectSummary } from "../api";
 import { labelPresentation } from "../labels";
@@ -17,6 +12,7 @@ import type {
 } from "../taskConversations";
 import type { ActorIdentity, ProjectSummary, Task } from "../types";
 import { ActorAvatar } from "./ActorAvatar";
+import { LinearPriorityIcon } from "./LinearIcon";
 import { TaskConversationMenu } from "./TaskConversationMenu";
 
 interface DashboardViewProps {
@@ -32,15 +28,14 @@ interface DashboardViewProps {
 }
 
 const PRIORITY_DETAILS = [
-  { priority: "urgent", label: "紧急", icon: priorityUrgentIcon },
-  { priority: "high", label: "高", icon: priorityHighIcon },
-  { priority: "medium", label: "中", icon: priorityMediumIcon },
-  { priority: "low", label: "低", icon: priorityLowIcon },
-  { priority: "none", label: "无优先级", icon: priorityNoneIcon },
+  { priority: "urgent", label: "紧急" },
+  { priority: "high", label: "高" },
+  { priority: "medium", label: "中" },
+  { priority: "low", label: "低" },
+  { priority: "none", label: "无优先级" },
 ] satisfies Array<{
   priority: Task["priority"];
   label: string;
-  icon: string;
 }>;
 
 const LABEL_COLORS = [
@@ -516,7 +511,7 @@ export function DashboardView({
               {priorityCounts.map((item) => (
                 <div className={`dashboard-priority-row priority-${item.priority}`} key={item.priority}>
                   <span className="dashboard-priority-name">
-                    <img src={item.icon} alt="" aria-hidden="true" />
+                    <LinearPriorityIcon priority={item.priority} />
                     {item.label}
                   </span>
                   <span className="dashboard-priority-track">
