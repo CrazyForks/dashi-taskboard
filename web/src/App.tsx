@@ -1915,6 +1915,26 @@ export function App() {
     }
   }
 
+  async function createTemporaryProject() {
+    if (openingProjectId) return;
+    const projectId = `temp-${window.crypto.randomUUID()}`;
+    setOpeningProjectId(projectId);
+    setActionError(null);
+    try {
+      const project = await createProjectRequest({
+        id: projectId,
+        name: "临时项目",
+        workspacePath: null,
+      });
+      setProjects((current) => [...current, project]);
+      changeProject(project.id);
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setOpeningProjectId(null);
+    }
+  }
+
   const headerProjectName = selectedProject?.name ?? "任务面板";
   const appShellStyle = embedded
     ? { "--codex-titlebar-left-inset": `${hostContext?.titlebarLeftInset ?? 0}px` } as CSSProperties
@@ -2029,6 +2049,15 @@ export function App() {
                         {project.id === selectedProjectId && <span className="project-menu-check" aria-hidden="true"><LinearIcon name="check" /></span>}
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={openingProjectId !== null}
+                      onClick={() => void createTemporaryProject()}
+                    >
+                      <TaskboardIcon className="project-avatar" name="create" />
+                      <span>创建项目</span>
+                    </button>
                   </div>
                 )}
               </div>
