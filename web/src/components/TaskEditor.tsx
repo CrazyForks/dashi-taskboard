@@ -136,7 +136,7 @@ export function TaskEditor({
   const [descriptionSegments, setDescriptionSegments] = useState<InlineMediaSegment[]>(
     () => initialDraft?.descriptionSegments ?? createInlineMediaSegments(),
   );
-  const [status, setStatus] = useState<TaskStatus>(task?.status ?? initialDraft?.status ?? initialStatus);
+  const [status, setStatus] = useState<TaskStatus>(task?.status ?? initialStatus);
   const [priority, setPriority] = useState<TaskPriority>(task?.priority ?? initialDraft?.priority ?? "none");
   const [assignee, setAssignee] = useState<ActorIdentity>(task?.assignee ?? initialDraft?.assignee ?? currentUser);
   const [selectedLabels, setSelectedLabels] = useState<string[]>(task?.labels ?? initialDraft?.selectedLabels ?? []);

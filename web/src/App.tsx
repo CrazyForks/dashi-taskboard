@@ -42,6 +42,7 @@ import {
   updateTask as updateTaskRequest,
 } from "./api";
 import {
+  actorKey,
   actorForAssigneeTarget,
   assigneeTargetForActor,
 } from "./actors";
@@ -205,10 +206,12 @@ const DEFAULT_USER_ACTOR: ActorIdentity = {
 };
 
 const GLOBAL_PROJECT_ID = "local";
+const RECENT_PROJECT_IDS_KEY = "taskboard.recentProjectIds.v1";
 const PROJECT_VIEW_KEY_PREFIX = "taskboard.project-view.v1.";
 const DEVICE_WORKSPACE_PATHS_KEY = "taskboard.deviceWorkspacePaths.v1";
 const PROJECT_AUTOMATIONS_KEY = "taskboard.projectAutomations.v1";
 const ISSUE_READ_KEY_PREFIX = "taskboard.issue-read.v1";
+const FIRST_USE_COMPLETE_KEY = "taskboard.first-use-complete.v1";
 const DEFAULT_AUTOMATION_OPTIONS = {
   enabledByUser: false,
   quotaAware: false,
@@ -234,6 +237,17 @@ function readProjectBoardView(projectId: string): BoardView {
   return view === "dashboard" || view === "list" || view === "gantt" || view === "issues"
     ? view
     : "issues";
+}
+
+function readRecentProjectIds(): string[] {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(RECENT_PROJECT_IDS_KEY) ?? "[]");
+    return Array.isArray(value)
+      ? value.filter((projectId): projectId is string => typeof projectId === "string" && projectId.length > 0)
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 const EVENT_NAMES = [
@@ -548,10 +562,10 @@ export function App() {
     } | null>
   >({});
   const [processingNow, setProcessingNow] = useState(() => Date.now());
+  const [recentProjectIds, setRecentProjectIds] = useState(readRecentProjectIds);
+  const initialProjectId = query.get("project") ?? recentProjectIds[0] ?? GLOBAL_PROJECT_ID;
   const [projects, setProjects] = useState<Project[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState(
-    () => query.get("project") ?? GLOBAL_PROJECT_ID,
-  );
+  const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
   const [hasLoadedTasks, setHasLoadedTasks] = useState(false);
@@ -560,9 +574,7 @@ export function App() {
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [search, setSearch] = useState("");
   const [filters, setFilters] = useState(readTaskFilters);
-  const [boardView, setBoardView] = useState<BoardView>(() => readProjectBoardView(
-    query.get("project") ?? GLOBAL_PROJECT_ID,
-  ));
+  const [boardView, setBoardView] = useState<BoardView>(() => readProjectBoardView(initialProjectId));
   const [dashboardSummaryAnimatedProjectId, setDashboardSummaryAnimatedProjectId] = useState<string | null>(null);
   const [ganttZoom, setGanttZoom] = useState<GanttZoom>("week");
   const [ganttHideCompleted, setGanttHideCompleted] = useState(false);
@@ -589,7 +601,9 @@ export function App() {
   const [settlingTaskId, setSettlingTaskId] = useState<string | null>(null);
   const [openingProjectId, setOpeningProjectId] = useState<string | null>(null);
   const [openingThreadTaskId, setOpeningThreadTaskId] = useState<string | null>(null);
-  const [projectMenuOpen, setProjectMenuOpen] = useState(true);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(
+    () => window.localStorage.getItem(FIRST_USE_COMPLETE_KEY) === null,
+  );
   const [deviceWorkspacePaths, setDeviceWorkspacePaths] = useState(readDeviceWorkspacePaths);
   const [projectAutomations, setProjectAutomations] = useState(readProjectAutomations);
   const [automationPending, setAutomationPending] = useState(false);
@@ -627,6 +641,15 @@ export function App() {
       if (normalizedPath) next[projectId] = normalizedPath;
       else delete next[projectId];
       window.localStorage.setItem(DEVICE_WORKSPACE_PATHS_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const rememberProjectOpen = useCallback((projectId: string) => {
+    setRecentProjectIds((current) => {
+      if (current[0] === projectId) return current;
+      const next = [projectId, ...current.filter((candidate) => candidate !== projectId)];
+      window.localStorage.setItem(RECENT_PROJECT_IDS_KEY, JSON.stringify(next));
       return next;
     });
   }, []);
@@ -715,8 +738,12 @@ export function App() {
         persisted: true,
       });
     }
-    return choices;
-  }, [hostContext?.projects, projects]);
+    const recentOrder = new Map(recentProjectIds.map((projectId, index) => [projectId, index]));
+    return choices.sort((left, right) => (
+      (recentOrder.get(left.id) ?? recentProjectIds.length)
+      - (recentOrder.get(right.id) ?? recentProjectIds.length)
+    ));
+  }, [hostContext?.projects, projects, recentProjectIds]);
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
   const issueReadStorageKey = selectedProjectId
     ? `${ISSUE_READ_KEY_PREFIX}:${taskboardMetadata?.mode ?? "local"}:${selectedProjectId}`
@@ -1037,6 +1064,12 @@ export function App() {
   useEffect(() => {
     tasksRef.current = tasks;
   }, [tasks]);
+
+  useEffect(() => {
+    if (window.localStorage.getItem(FIRST_USE_COMPLETE_KEY) === null) {
+      window.localStorage.setItem(FIRST_USE_COMPLETE_KEY, "true");
+    }
+  }, []);
 
   useEffect(() => {
     if (!projectMenuOpen) return;
@@ -1704,10 +1737,14 @@ export function App() {
     const optimisticAssignee = assigneeTarget
       ? actorForAssigneeTarget(assigneeTarget, currentUser)
       : task.assignee;
+    const optimisticParticipants = assigneeTarget
+      && !task.participants.some((participant) => actorKey(participant) === actorKey(optimisticAssignee))
+      ? [...task.participants, optimisticAssignee]
+      : task.participants;
     setActionError(null);
     setTasks((current) => current.map((candidate) =>
       candidate.id === task.id
-        ? { ...candidate, ...taskChanges, assignee: optimisticAssignee }
+        ? { ...candidate, ...taskChanges, assignee: optimisticAssignee, participants: optimisticParticipants }
         : candidate,
     ));
 
@@ -1876,6 +1913,7 @@ export function App() {
     setProjectMenuOpen(false);
     setDetailTaskIdentifier(null);
     setBoardView(readProjectBoardView(projectId));
+    rememberProjectOpen(projectId);
     setSelectedProjectId(projectId);
     setSearch("");
     setFilters(EMPTY_TASK_FILTERS);
@@ -1907,6 +1945,26 @@ export function App() {
           if (!project) throw error;
         }
       }
+      changeProject(project.id);
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setOpeningProjectId(null);
+    }
+  }
+
+  async function createTemporaryProject() {
+    if (openingProjectId) return;
+    const projectId = `temp-${window.crypto.randomUUID()}`;
+    setOpeningProjectId(projectId);
+    setActionError(null);
+    try {
+      const project = await createProjectRequest({
+        id: projectId,
+        name: "临时项目",
+        workspacePath: null,
+      });
+      setProjects((current) => [...current, project]);
       changeProject(project.id);
     } catch (error) {
       setActionError(errorMessage(error));
@@ -2029,6 +2087,15 @@ export function App() {
                         {project.id === selectedProjectId && <span className="project-menu-check" aria-hidden="true"><LinearIcon name="check" /></span>}
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={openingProjectId !== null}
+                      onClick={() => void createTemporaryProject()}
+                    >
+                      <TaskboardIcon className="project-avatar" name="create" />
+                      <span>创建项目</span>
+                    </button>
                   </div>
                 )}
               </div>
@@ -2298,8 +2365,11 @@ export function App() {
                         movingTaskId={movingTaskId}
                         settlingTaskId={settlingTaskId}
                         contextMenuTaskId={contextMenu?.taskId ?? null}
+                        availableLabels={availableLabels}
+                        currentUser={currentUser}
                         onCreate={(initialStatus) => setEditor({ task: null, status: initialStatus })}
                         onEdit={openTaskDetail}
+                        onUpdate={updateTaskProperties}
                         onComplete={(task) => void moveTask(task, "done")}
                         onContextMenu={(task, position) => setContextMenu({ taskId: task.id, ...position })}
                         onDragStart={startTaskDrag}
@@ -2325,9 +2395,12 @@ export function App() {
                     movingTaskId={movingTaskId}
                     settlingTaskId={settlingTaskId}
                     contextMenuTaskId={contextMenu?.taskId ?? null}
+                    availableLabels={availableLabels}
+                    currentUser={currentUser}
                     onStatusChange={setOtherTasksStatus}
                     onCreate={(initialStatus) => setEditor({ task: null, status: initialStatus })}
                     onEdit={openTaskDetail}
+                    onUpdate={updateTaskProperties}
                     onContextMenu={(task, position) => setContextMenu({ taskId: task.id, ...position })}
                     onDragStart={startTaskDrag}
                     onDragEnd={endTaskDrag}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DragEvent } from "react";
-import type { Task, TaskStatus } from "../types";
+import type { ActorIdentity, Task, TaskDraft, TaskStatus } from "../types";
 import type { TaskCardPresentation, TaskConversationItem } from "../taskConversations";
 import { TaskCard } from "./TaskCard";
 import {
@@ -72,8 +72,11 @@ interface BoardColumnProps {
   movingTaskId: string | null;
   settlingTaskId: string | null;
   contextMenuTaskId: string | null;
+  availableLabels: string[];
+  currentUser: ActorIdentity;
   onCreate: (status: TaskStatus) => void;
   onEdit: (task: Task) => void;
+  onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
   onComplete: (task: Task) => void;
   onContextMenu: (task: Task, position: { x: number; y: number }) => void;
   onDragStart: (task: Task, height: number) => void;
@@ -95,8 +98,11 @@ export function BoardColumn({
   movingTaskId,
   settlingTaskId,
   contextMenuTaskId,
+  availableLabels,
+  currentUser,
   onCreate,
   onEdit,
+  onUpdate,
   onComplete,
   onContextMenu,
   onDragStart,
@@ -200,7 +206,10 @@ export function BoardColumn({
               isMoving={movingTaskId === task.id}
               isSettling={settlingTaskId === task.id}
               isContextMenuOpen={contextMenuTaskId === task.id}
+              availableLabels={availableLabels}
+              currentUser={currentUser}
               onEdit={onEdit}
+              onUpdate={onUpdate}
               onComplete={onComplete}
               onContextMenu={onContextMenu}
               onDragStart={onDragStart}

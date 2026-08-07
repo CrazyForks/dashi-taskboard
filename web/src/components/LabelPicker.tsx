@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { labelDisplayName, labelPresentation } from "../labels";
 import { LinearIcon } from "./LinearIcon";
 
@@ -12,6 +12,7 @@ interface LabelPickerProps {
   showIcon?: boolean;
   showSelectedAsChips?: boolean;
   placeholder?: string;
+  triggerContent?: ReactNode;
   onOpenChange: (open: boolean) => void;
   onChange: (labels: string[]) => void;
 }
@@ -26,6 +27,7 @@ export function LabelPicker({
   showIcon = false,
   showSelectedAsChips = false,
   placeholder = "标签",
+  triggerContent,
   onOpenChange,
   onChange,
 }: LabelPickerProps) {
@@ -87,25 +89,27 @@ export function LabelPicker({
         aria-expanded={open}
         onClick={() => onOpenChange(!open)}
       >
-        {showIcon && <LinearIcon name="label" />}
-        {selectedLabels.length > 0 && showSelectedAsChips ? (
-          <span className="label-trigger-chips">
-            {selectedLabels.slice(0, 2).map((label) => {
-              const presentation = labelPresentation(label);
-              return (
-                <span className="label-trigger-chip" key={label}>
-                  {presentation.tone && <i style={{ background: presentation.color }} />}
-                  {presentation.name}
-                </span>
-              );
-            })}
-            {selectedLabels.length > 2 && (
-              <span className="label-trigger-chip">+{selectedLabels.length - 2}</span>
-            )}
-          </span>
-        ) : (
-          <span>{selectedLabels.length > 0 ? selectedLabels.map(labelDisplayName).join(", ") : placeholder}</span>
-        )}
+        {triggerContent ?? <>
+          {showIcon && <LinearIcon name="label" />}
+          {selectedLabels.length > 0 && showSelectedAsChips ? (
+            <span className="label-trigger-chips">
+              {selectedLabels.slice(0, 2).map((label) => {
+                const presentation = labelPresentation(label);
+                return (
+                  <span className="label-trigger-chip" key={label}>
+                    {presentation.tone && <i style={{ background: presentation.color }} />}
+                    {presentation.name}
+                  </span>
+                );
+              })}
+              {selectedLabels.length > 2 && (
+                <span className="label-trigger-chip">+{selectedLabels.length - 2}</span>
+              )}
+            </span>
+          ) : (
+            <span>{selectedLabels.length > 0 ? selectedLabels.map(labelDisplayName).join(", ") : placeholder}</span>
+          )}
+        </>}
       </button>
       {open && (
         <div className="composer-popover label-popover" role="dialog" aria-label="选择或创建标签">
@@ -128,7 +132,7 @@ export function LabelPicker({
                   key={label}
                   onClick={() => toggleLabel(label)}
                 >
-                  {presentation.tone && <i style={{ background: presentation.color }} />}
+                  <i style={{ background: presentation.tone ? presentation.color : "transparent" }} />
                   <span>{presentation.name}</span>
                   {selectedLabels.includes(label) && <b><LinearIcon name="check" /></b>}
                 </button>
@@ -143,9 +147,11 @@ export function LabelPicker({
                   setSearch("");
                 }}
               >
-                {labelPresentation(normalizedSearch).tone && (
-                  <i style={{ background: labelPresentation(normalizedSearch).color }} />
-                )}
+                <i style={{
+                  background: labelPresentation(normalizedSearch).tone
+                    ? labelPresentation(normalizedSearch).color
+                    : "transparent",
+                }} />
                 <span>创建 “{normalizedSearch}”</span>
               </button>
             )}

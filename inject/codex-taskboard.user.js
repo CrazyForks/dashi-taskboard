@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.6.11";
+  const VERSION = "0.6.12";
   const SOURCE_HASH = window.__CODEX_TASKBOARD_SOURCE_HASH__;
   const SENTINEL_KEY = "__codexTaskboardInjection__";
   const DEFAULT_TASKBOARD_URL = "http://127.0.0.1:47823/?host=codex";
@@ -309,13 +309,10 @@
     const viewport = document.querySelector("[data-app-shell-main-content-layout]");
     if (!viewport) return null;
     const viewportRect = viewport.getBoundingClientRect();
-    const headerBottom = document.querySelector("main > header")?.getBoundingClientRect().bottom
-      ?? viewportRect.top;
     return Array.from(viewport.children).find((candidate) => {
       const rect = candidate.getBoundingClientRect();
       return rect.width >= viewportRect.width * 0.8
-        && rect.height >= viewportRect.height * 0.7
-        && rect.top >= headerBottom - 1;
+        && rect.height >= viewportRect.height * 0.7;
     }) || null;
   }
 
