@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -178,6 +178,43 @@ test("non-local AI threads reject projects without an available workspace", asyn
     });
     assert.equal(created.response.status, 409);
     assert.equal(created.body.error.code, "PROJECT_WORKSPACE_UNAVAILABLE");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("non-local AI turns reject a workspace that became unavailable", async () => {
+  const fixture = await createServerFixture();
+  try {
+    const workspaceLink = path.join(fixture.directory, "project-workspace");
+    await symlink(path.resolve(import.meta.dirname, ".."), workspaceLink, "dir");
+    const project = await request(fixture.baseUrl, "/api/projects", {
+      method: "POST",
+      body: {
+        id: "disconnected-workspace",
+        name: "Disconnected workspace",
+        workspacePath: workspaceLink,
+      },
+    });
+    assert.equal(project.response.status, 201);
+
+    const created = await request(fixture.baseUrl, "/api/local/ai/threads", {
+      method: "POST",
+      body: { projectId: "disconnected-workspace" },
+    });
+    assert.equal(created.response.status, 201);
+    const threadId = created.body.thread.id;
+    await rm(workspaceLink);
+
+    const turn = await request(fixture.baseUrl, `/api/local/ai/threads/${threadId}/turns`, {
+      method: "POST",
+      body: { message: "hello" },
+    });
+    assert.equal(turn.response.status, 409);
+    assert.equal(turn.body.error.code, "PROJECT_WORKSPACE_UNAVAILABLE");
+
+    const snapshot = await request(fixture.baseUrl, `/api/local/ai/threads/${threadId}`);
+    assert.deepEqual(snapshot.body.runs, []);
   } finally {
     await fixture.close();
   }
