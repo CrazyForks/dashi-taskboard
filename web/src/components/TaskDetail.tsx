@@ -39,6 +39,7 @@ import { ActorAvatar } from "./ActorAvatar";
 import { STATUS_DETAILS, StatusIcon } from "./BoardColumn";
 import { LabelPicker } from "./LabelPicker";
 import { LinearIcon, LinearPriorityIcon } from "./LinearIcon";
+import { TaskboardIcon } from "./TaskboardIcon";
 import {
   fileKey,
   MAX_ATTACHMENT_SIZE,
@@ -215,6 +216,34 @@ function activityValue(field: string, value: unknown): string {
   if (Array.isArray(value)) return value.join("、");
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+function ActivityChangeIcon({ field, before, after }: {
+  field: string;
+  before: unknown;
+  after: unknown;
+}) {
+  const value = after ?? before;
+  if (field === "status" && typeof value === "string" && value in STATUS_DETAILS) {
+    return <StatusIcon status={value as TaskStatus} />;
+  }
+  if (field === "priority" && typeof value === "string" && value in PRIORITY_DETAILS) {
+    return <LinearPriorityIcon priority={value as TaskPriority} />;
+  }
+  if (field === "relation" && typeof value === "object") {
+    const relation = value as { type?: IssueRelationType };
+    if (relation.type === "blocked_by") return <TaskboardIcon name="relationBlockedBy" />;
+    if (relation.type === "blocks") return <TaskboardIcon name="relationBlocks" />;
+    return <LinearIcon name="link" />;
+  }
+  if (field === "projectId" || field === "workflowId") return <LinearIcon name="project" />;
+  if (field === "labels") return <LinearIcon name="label" />;
+  if (field === "assignee") return <LinearIcon name="myIssues" />;
+  if (field === "developmentContext") return <LinearIcon name="branch" />;
+  if (field === "startDate" || field === "dueDate") return <LinearIcon name="calendar" />;
+  if (field === "recurrence") return <LinearIcon name="recurrence" />;
+  if (field === "archivedAt") return <LinearIcon name="trash" />;
+  return <LinearIcon name="write" />;
 }
 
 function DescriptionDocument({ value }: { value: string }) {
@@ -669,12 +698,13 @@ export function TaskDetail({
     (attachment) => !description.includes(attachmentContentUrl(attachment)),
   );
   const activityTimeline = [
-    ...taskActivities.map((activity) => ({
+    ...taskActivities.flatMap((activity) => activity.changes.map((change, index) => ({
       kind: "change" as const,
-      id: activity.id,
+      id: `${activity.id}-${index}`,
       createdAt: activity.createdAt,
       activity,
-    })),
+      change,
+    }))),
     ...comments.map((comment) => ({
       kind: "comment" as const,
       id: comment.id,
@@ -865,19 +895,20 @@ export function TaskDetail({
 
               <div className="activity-stream">
                 <div className={`activity-entry activity-created is-${currentTask.creatorType}`}>
-                  <ActorAvatar
-                    className="comment-avatar"
-                    actor={{
-                      type: currentTask.creatorType,
-                      id: currentTask.creatorId,
-                      name: currentTask.creatorName,
-                      avatarUrl: currentTask.creatorAvatarUrl,
-                    }}
-                  />
+                  <span className="activity-rail-icon activity-creator-icon" aria-hidden="true">
+                    <ActorAvatar
+                      className="comment-avatar"
+                      actor={{
+                        type: currentTask.creatorType,
+                        id: currentTask.creatorId,
+                        name: currentTask.creatorName,
+                        avatarUrl: currentTask.creatorAvatarUrl,
+                      }}
+                    />
+                  </span>
                   <p>
                     <strong>{currentTask.creatorName}</strong>
-                    <span className="actor-id">@{currentTask.creatorId}</span>
-                    创建了此议题
+                    {" "}创建了此议题
                     <time title={exactTime(currentTask.createdAt)}>{relativeTime(currentTask.createdAt)}</time>
                   </p>
                 </div>
@@ -886,41 +917,36 @@ export function TaskDetail({
                   <div className="comments-loading" aria-label="正在加载活动" aria-busy="true"><i /><i /></div>
                 ) : activityTimeline.map((item) => {
                   if (item.kind === "change") {
-                    const activity = item.activity;
+                    const { activity, change } = item;
                     return (
                       <article
-                        className={`activity-change is-${activity.actorType}`}
-                        key={activity.id}
+                        className={`activity-entry activity-change is-${activity.actorType}`}
+                        key={item.id}
                       >
-                        <header className="activity-change-header">
-                          <ActorAvatar
-                            className="comment-avatar"
-                            actor={{
-                              type: activity.actorType,
-                              id: activity.actorId,
-                              name: activity.actorName,
-                              avatarUrl: activity.actorAvatarUrl,
-                            }}
+                        <span className="activity-rail-icon" aria-hidden="true">
+                          <ActivityChangeIcon
+                            field={change.field}
+                            before={change.before}
+                            after={change.after}
                           />
-                          <p>
-                            <strong>{activity.actorName}</strong>
-                            <span className="actor-id">@{activity.actorId}</span>
-                            更新了议题
-                            <time title={exactTime(activity.createdAt)}>{relativeTime(activity.createdAt)}</time>
-                          </p>
-                        </header>
-                        <ul className="activity-change-list">
-                          {activity.changes.map((change, index) => (
-                            <li key={`${change.field}-${index}`}>
-                              <strong>{ACTIVITY_FIELD_LABELS[change.field] ?? change.field}</strong>
-                              <div className="activity-change-values">
-                                <span>{activityValue(change.field, change.before)}</span>
-                                <span aria-hidden="true">→</span>
-                                <span>{activityValue(change.field, change.after)}</span>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
+                        </span>
+                        <p>
+                          <strong>{activity.actorName}</strong>
+                          {" "}
+                          {change.field === "relation" && change.before === null ? (
+                            <>添加了 <span className="activity-change-value">{activityValue(change.field, change.after)}</span></>
+                          ) : change.field === "relation" && change.after === null ? (
+                            <>移除了 <span className="activity-change-value">{activityValue(change.field, change.before)}</span></>
+                          ) : (
+                            <>
+                              将{ACTIVITY_FIELD_LABELS[change.field] ?? change.field}从
+                              <span className="activity-change-value">{activityValue(change.field, change.before)}</span>
+                              改为
+                              <span className="activity-change-value">{activityValue(change.field, change.after)}</span>
+                            </>
+                          )}
+                          <time title={exactTime(activity.createdAt)}>{relativeTime(activity.createdAt)}</time>
+                        </p>
                       </article>
                     );
                   }
