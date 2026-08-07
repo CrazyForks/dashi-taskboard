@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, KeyboardEvent } from "react";
 import { ApiError } from "../api";
 import {
   TASK_PRIORITIES,
@@ -32,6 +32,7 @@ import {
   InlineMediaComposer,
   inlineMediaImages,
   serializeInlineMedia,
+  type InlineMediaComposerHandle,
   type InlineMediaSegment,
   type PendingInlineImage,
 } from "./InlineMediaComposer";
@@ -127,6 +128,8 @@ export function TaskEditor({
 }: TaskEditorProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
+  const descriptionComposerRef = useRef<InlineMediaComposerHandle>(null);
+  const createSubmitIntentRef = useRef(false);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState(task?.title ?? initialDraft?.title ?? "");
   const [description, setDescription] = useState(task?.description ?? "");
@@ -172,6 +175,10 @@ export function TaskEditor({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!task) {
+      if (!createSubmitIntentRef.current) return;
+      createSubmitIntentRef.current = false;
+    }
     const cleanTitle = title.trim();
     if (!cleanTitle) {
       setError("请为议题填写一个简短、明确的标题。");
@@ -212,6 +219,20 @@ export function TaskEditor({
       }
     } finally {
       setSaving(false);
+    }
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLFormElement>) {
+    if (task || event.key !== "Enter") return;
+    if (event.metaKey || event.ctrlKey) {
+      event.preventDefault();
+      createSubmitIntentRef.current = true;
+      event.currentTarget.requestSubmit();
+      return;
+    }
+    if (event.target === titleRef.current) {
+      event.preventDefault();
+      descriptionComposerRef.current?.focus();
     }
   }
 
@@ -263,7 +284,7 @@ export function TaskEditor({
         if (event.target === event.currentTarget && !saving) cancelEditor();
       }}
     >
-      <form className="task-form" onSubmit={handleSubmit}>
+      <form className="task-form" onSubmit={handleSubmit} onKeyDown={handleKeyDown}>
         <header className="dialog-header">
           <div className="dialog-context">
             <strong id="task-dialog-title">{task ? task.identifier : "新建议题"}</strong>
@@ -290,6 +311,7 @@ export function TaskEditor({
             </label>
           ) : (
             <InlineMediaComposer
+              ref={descriptionComposerRef}
               className="composer-description inline-media-description"
               segments={descriptionSegments}
               placeholder="Add description…"
@@ -418,7 +440,16 @@ export function TaskEditor({
             {task && <span aria-hidden="true" />}
             <div className="dialog-actions">
               {task && <span className="dialog-updated">编辑 {task.identifier}</span>}
-              <button className="button primary" type="submit" disabled={saving}>{saving ? "正在保存…" : task ? "保存更改" : "创建议题"}</button>
+              <button
+                className="button primary"
+                type="submit"
+                disabled={saving}
+                onClick={() => {
+                  if (!task) createSubmitIntentRef.current = true;
+                }}
+              >
+                {saving ? "正在保存…" : task ? "保存更改" : "创建议题"}
+              </button>
             </div>
           </footer>
         </div>
