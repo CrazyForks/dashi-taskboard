@@ -3785,10 +3785,9 @@ kbd {
 }
 
 .comment-edit-form {
-  padding: 10px 16px 16px;
+  padding: 0 0 16px;
 }
 
-.comment-edit-form textarea,
 .inline-media-composer textarea {
   display: block;
   width: 100%;
@@ -3801,20 +3800,11 @@ kbd {
   line-height: 19px;
 }
 
-.comment-edit-form textarea {
-  min-height: 74px;
-  padding: 6px;
-  border: var(--border-hairline) solid var(--border-strong);
-  border-radius: 5px;
-  background: var(--bg);
-  resize: vertical;
-}
-
-.comment-edit-form > div {
+.comment-edit-actions {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
-  margin-top: 7px;
+  margin: 7px 16px 0;
 }
 
 .comments-loading {

@@ -1008,22 +1008,27 @@ export function TaskDetail({
 
                       {editingId === comment.id ? (
                         <div className="comment-edit-form">
-                          <textarea
-                            className="comment-input"
-                            autoFocus
-                            value={editingBody}
-                            rows={3}
-                            aria-label="编辑评论"
-                            onChange={(event) => setEditingBody(event.target.value)}
-                            onKeyDown={(event) => {
-                              if (event.key === "Escape") setEditingId(null);
-                              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                                event.preventDefault();
-                                void saveComment(comment);
-                              }
-                            }}
-                          />
-                          <div>
+                          <div className="inline-media-composer comment-inline-media">
+                            <textarea
+                              ref={resizeTextarea}
+                              autoFocus
+                              value={editingBody}
+                              rows={1}
+                              aria-label="编辑评论"
+                              onChange={(event) => {
+                                setEditingBody(event.target.value);
+                                resizeTextarea(event.currentTarget);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === "Escape") setEditingId(null);
+                                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                                  event.preventDefault();
+                                  void saveComment(comment);
+                                }
+                              }}
+                            />
+                          </div>
+                          <div className="comment-edit-actions">
                             <button className="button secondary" type="button" onClick={() => setEditingId(null)}>取消</button>
                             <button
                               className="button primary"
