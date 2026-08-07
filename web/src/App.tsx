@@ -146,7 +146,14 @@ interface ProjectContextMenuState {
 }
 
 interface UndoOperation {
+  id: number;
+  message: string;
   undo: () => Promise<void>;
+}
+
+interface UndoNotice {
+  id: number;
+  message: string;
 }
 
 type ProjectAutomationStatus = "ACTIVE" | "PAUSED";
@@ -551,6 +558,7 @@ export function App() {
   const query = useMemo(() => new URLSearchParams(window.location.search), []);
   const host = query.get("host");
   const embedded = host === "codex" || host === "workbuddy";
+  const undoShortcut = navigator.userAgent.includes("Macintosh") ? "⌘Z" : "Ctrl+Z";
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [hostContext, setHostContext] = useState<HostContext | null>(null);
   const [developmentScan, setDevelopmentScan] = useState<DevelopmentScan>({ workspacePath: null, contexts: [] });
@@ -622,8 +630,10 @@ export function App() {
   const [automationPending, setAutomationPending] = useState(false);
   const [automationError, setAutomationError] = useState<string | null>(null);
   const [announcement, setAnnouncementValue] = useState("");
+  const [undoNotice, setUndoNotice] = useState<UndoNotice | null>(null);
   const tasksRequestRef = useRef(0);
   const tasksRef = useRef<Task[]>([]);
+  const undoSequenceRef = useRef(0);
   const undoStackRef = useRef<UndoOperation[]>([]);
   const undoInFlightRef = useRef(false);
   const dragRegionRef = useRef<HTMLDivElement>(null);
@@ -636,6 +646,7 @@ export function App() {
   const projectAutomationsRef = useRef(projectAutomations);
 
   const setAnnouncement = useCallback((message: string) => {
+    setUndoNotice(null);
     setAnnouncementValue(message);
   }, []);
 
@@ -1408,9 +1419,11 @@ export function App() {
     refreshWorkflowOptions,
   ]);
 
-  function pushUndo(undo: () => Promise<void>) {
-    const operation = { undo };
+  function pushUndo(message: string, undo: () => Promise<void>) {
+    const operation = { id: ++undoSequenceRef.current, message, undo };
     undoStackRef.current = [...undoStackRef.current.slice(-19), operation];
+    setAnnouncementValue("");
+    setUndoNotice({ id: operation.id, message });
   }
 
   async function performUndo() {
@@ -1419,6 +1432,7 @@ export function App() {
     if (!operation) return;
     undoStackRef.current = undoStackRef.current.slice(0, -1);
     undoInFlightRef.current = true;
+    setUndoNotice(null);
     setProjectMenuOpen(false);
     closeContextMenu();
     setActionError(null);
@@ -1641,7 +1655,9 @@ export function App() {
         setActionError(`${saved.identifier} 已创建，但有 ${failedAttachments} 个附件上传失败，可在详情页重试。`);
       }
       if (creating) {
-        pushUndo(async () => {
+        const totalUploaded = uploadedAttachments + inlineImages.length;
+        const message = `${saved.identifier} 已创建${totalUploaded > 0 ? `，已上传 ${totalUploaded} 个附件` : ""}。`;
+        pushUndo(message, async () => {
           const candidate = tasksRef.current.find((task) => task.id === saved.id);
           const current = candidate && candidate.version >= saved.version ? candidate : saved;
           await archiveTaskRequest(current);
@@ -1651,7 +1667,10 @@ export function App() {
         const previous = editor.task;
         const previousAssigneeTarget = assigneeTargetForActor(previous.assignee, currentUser);
         if (!draft.assigneeTarget || previousAssigneeTarget) {
-          pushUndo(() => restoreTaskDetails(previous, saved, previousAssigneeTarget));
+          pushUndo(
+            `${saved.identifier} 已更新。`,
+            () => restoreTaskDetails(previous, saved, previousAssigneeTarget),
+          );
         }
       }
     } catch (error) {
@@ -1717,7 +1736,10 @@ export function App() {
       setTasks((current) => sortTasks(current.map((candidate) =>
         candidate.id === moved.id ? moved : candidate,
       )));
-      pushUndo(async () => {
+      const message = task.status === status
+        ? `${task.identifier} 排序已调整。`
+        : `${task.identifier} 已移至${STATUS_DETAILS[status].label}。`;
+      pushUndo(message, async () => {
         const candidate = tasksRef.current.find((current) => current.id === moved.id);
         const current = candidate && candidate.version >= moved.version ? candidate : moved;
         const restored = await moveTaskRequest(current, previous.status, previous.sortOrder);
@@ -1788,7 +1810,10 @@ export function App() {
       )));
       const previousAssigneeTarget = assigneeTargetForActor(previous.assignee, currentUser);
       if (!assigneeTarget || previousAssigneeTarget) {
-        pushUndo(() => restoreTaskDetails(previous, updated, previousAssigneeTarget));
+        pushUndo(
+          `${task.identifier} 已更新。`,
+          () => restoreTaskDetails(previous, updated, previousAssigneeTarget),
+        );
       }
       return updated;
     } catch (error) {
@@ -1839,7 +1864,7 @@ export function App() {
         developmentContext: null,
       });
       setTasks((current) => sortTasks([...current, duplicated]));
-      pushUndo(async () => {
+      pushUndo(`${duplicated.identifier} 副本已创建。`, async () => {
         const candidate = tasksRef.current.find((current) => current.id === duplicated.id);
         const current = candidate && candidate.version >= duplicated.version ? candidate : duplicated;
         await archiveTaskRequest(current);
@@ -1855,7 +1880,7 @@ export function App() {
     try {
       const archived = await archiveTaskRequest(task);
       setTasks((current) => current.filter((candidate) => candidate.id !== task.id));
-      pushUndo(async () => {
+      pushUndo(`${task.identifier} 已归档。`, async () => {
         const restored = await restoreTaskRequest(archived);
         setTasks((current) => sortTasks([
           ...current.filter((candidate) => candidate.id !== restored.id),
@@ -1953,6 +1978,7 @@ export function App() {
     setFilters(EMPTY_TASK_FILTERS);
     setActionError(null);
     undoStackRef.current = [];
+    setUndoNotice(null);
     const url = buildIssueUrl(window.location.href, projectId, null);
     window.history.replaceState(null, "", url);
   }
@@ -2699,6 +2725,19 @@ export function App() {
       />
 
       <div className="sr-only" role="status" aria-live="polite">{announcement}</div>
+      {undoNotice && (
+        <div
+          className="toast undo-toast"
+          role="status"
+          onAnimationEnd={() => setUndoNotice((current) => current?.id === undoNotice.id ? null : current)}
+        >
+          <span aria-hidden="true"><LinearIcon name="check" /></span>
+          <span className="undo-toast-message">{undoNotice.message}</span>
+          <button type="button" onClick={() => void performUndo()}>
+            撤回 <kbd>{undoShortcut}</kbd>
+          </button>
+        </div>
+      )}
       {announcement && (
         <div className="toast" role="status" onAnimationEnd={() => setAnnouncementValue("")}>
           <span aria-hidden="true"><LinearIcon name="check" /></span>{announcement}

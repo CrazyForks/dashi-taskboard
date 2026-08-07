@@ -6769,6 +6769,42 @@ kbd {
   color: var(--success);
 }
 
+.undo-toast {
+  gap: 7px;
+  animation: toast-life 5.5s ease both;
+}
+
+.undo-toast-message {
+  max-width: min(420px, 56vw);
+  overflow: hidden;
+  color: inherit;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.undo-toast button {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  gap: 5px;
+  margin: -3px -5px -3px 2px;
+  padding: 0 6px;
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, var(--bg) 24%, transparent);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.undo-toast button:hover {
+  background: color-mix(in srgb, var(--bg) 10%, transparent);
+}
+
+.undo-toast kbd {
+  color: color-mix(in srgb, var(--bg) 68%, transparent);
+  font: inherit;
+}
+
 @keyframes shimmer {
   to { background-position: -220% 0; }
 }

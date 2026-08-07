@@ -18,7 +18,10 @@ const globalStyles = await readFile(new URL("../web/src/styles.css", import.meta
 
 test("the taskboard defaults to issues and exposes the current project views", () => {
   assert.match(appSource, /type BoardView = "dashboard" \| "issues" \| "list" \| "gantt" \| "workflow"/);
-  assert.match(appSource, /function readProjectBoardView[\s\S]*?: "issues"/);
+  assert.match(
+    appSource,
+    /function readProjectBoardView\(projectId: string\): BoardView \{\s*const view = [^;]+;\s*return [\s\S]*?\? view\s*: "issues";\s*\}/,
+  );
   assert.match(appSource, /useState<BoardView>\(\(\) => readProjectBoardView\(initialProjectId\)\)/);
   assert.match(appSource, />\s*Dashboard\s*<\/button>/);
   assert.match(appSource, />\s*议题看板\s*<\/button>/);
