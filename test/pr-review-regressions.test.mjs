@@ -62,7 +62,7 @@ test("task list activity queries project metadata while detail routes retain ful
 test("view tabs expose a visible keyboard focus indicator", () => {
   assert.match(
     styles,
-    /\.view-tab:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);[^}]*outline-offset:\s*1px;/s,
+    /button:focus-visible,[\s\S]*?\[tabindex\][^{]*\{[^}]*outline:\s*2px solid color-mix\(in srgb, var\(--accent\) 70%, transparent\);[^}]*outline-offset:\s*1px;/s,
   );
   assert.doesNotMatch(styles, /\.view-tab:focus-visible\s*\{[^}]*outline:\s*0;/s);
 });
