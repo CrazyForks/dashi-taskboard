@@ -1370,7 +1370,11 @@ export function createTaskboardServer(options = {}) {
           database,
         );
       } catch (error) {
-        if (!(error instanceof ApiError) || error.code !== "PROJECT_WORKSPACE_UNAVAILABLE") {
+        if (
+          !(error instanceof ApiError)
+          || error.code !== "PROJECT_WORKSPACE_UNAVAILABLE"
+          || projectId !== DEFAULT_PROJECT_ID
+        ) {
           throw error;
         }
         resolvedWorkspace = {
