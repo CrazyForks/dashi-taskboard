@@ -24,6 +24,7 @@ import {
   archiveTask as archiveTaskRequest,
   createProject as createProjectRequest,
   createTask as createTaskRequest,
+  deleteProject as deleteProjectRequest,
   getCodexThreadProgress,
   getHostRuntime,
   getTaskboardRevision,
@@ -136,6 +137,12 @@ interface ProjectChoice {
   issueCount: number;
   inCodex: boolean;
   persisted: boolean;
+}
+
+interface ProjectContextMenuState {
+  project: ProjectChoice;
+  x: number;
+  y: number;
 }
 
 interface UndoOperation {
@@ -604,6 +611,12 @@ export function App() {
   const [projectMenuOpen, setProjectMenuOpen] = useState(
     () => window.localStorage.getItem(FIRST_USE_COMPLETE_KEY) === null,
   );
+  const [projectContextMenu, setProjectContextMenu] = useState<ProjectContextMenuState | null>(null);
+  const [projectCreateOpen, setProjectCreateOpen] = useState(false);
+  const [projectName, setProjectName] = useState("");
+  const [pendingProjectDelete, setPendingProjectDelete] = useState<ProjectChoice | null>(null);
+  const [projectDeleteIssueCount, setProjectDeleteIssueCount] = useState<number | null>(null);
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const [deviceWorkspacePaths, setDeviceWorkspacePaths] = useState(readDeviceWorkspacePaths);
   const [projectAutomations, setProjectAutomations] = useState(readProjectAutomations);
   const [automationPending, setAutomationPending] = useState(false);
@@ -1090,6 +1103,23 @@ export function App() {
       window.removeEventListener("keydown", closeProjectMenuWithEscape);
     };
   }, [projectMenuOpen]);
+
+  useEffect(() => {
+    if (!projectContextMenu) return;
+    function closeProjectContextMenu(event: PointerEvent) {
+      const target = event.target as HTMLElement;
+      if (!target.closest("[data-project-context-menu]")) setProjectContextMenu(null);
+    }
+    function closeProjectContextMenuWithEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setProjectContextMenu(null);
+    }
+    document.addEventListener("pointerdown", closeProjectContextMenu);
+    window.addEventListener("keydown", closeProjectContextMenuWithEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeProjectContextMenu);
+      window.removeEventListener("keydown", closeProjectContextMenuWithEscape);
+    };
+  }, [projectContextMenu]);
 
   useEffect(() => {
     setAutomationError(null);
@@ -1913,6 +1943,7 @@ export function App() {
 
   function changeProject(projectId: string) {
     closeContextMenu();
+    setProjectContextMenu(null);
     setProjectMenuOpen(false);
     setDetailTaskIdentifier(null);
     setBoardView(readProjectBoardView(projectId));
@@ -1956,23 +1987,83 @@ export function App() {
     }
   }
 
+  function openCreateProjectDialog() {
+    setProjectMenuOpen(false);
+    setProjectContextMenu(null);
+    setProjectName("");
+    setActionError(null);
+    setProjectCreateOpen(true);
+  }
+
+  function closeCreateProjectDialog() {
+    if (openingProjectId) return;
+    setProjectCreateOpen(false);
+    setActionError(null);
+  }
+
   async function createTemporaryProject() {
     if (openingProjectId) return;
+    const name = projectName.trim();
+    if (!name) return;
     const projectId = `temp-${window.crypto.randomUUID()}`;
     setOpeningProjectId(projectId);
     setActionError(null);
     try {
       const project = await createProjectRequest({
         id: projectId,
-        name: "临时项目",
+        name,
         workspacePath: null,
       });
       setProjects((current) => [...current, project]);
+      setProjectCreateOpen(false);
       changeProject(project.id);
     } catch (error) {
       setActionError(errorMessage(error));
     } finally {
       setOpeningProjectId(null);
+    }
+  }
+
+  function requestProjectDelete(project: ProjectChoice) {
+    setProjectMenuOpen(false);
+    setProjectContextMenu(null);
+    setProjectDeleteIssueCount(null);
+    setPendingProjectDelete(project);
+  }
+
+  function closeProjectDeleteDialog() {
+    if (deletingProjectId) return;
+    setPendingProjectDelete(null);
+    setProjectDeleteIssueCount(null);
+  }
+
+  async function deletePendingProject() {
+    if (!pendingProjectDelete || deletingProjectId) return;
+    const project = pendingProjectDelete;
+    setDeletingProjectId(project.id);
+    setActionError(null);
+    try {
+      await deleteProjectRequest(project.id);
+      setProjects((current) => current.filter((candidate) => candidate.id !== project.id));
+      setRecentProjectIds((current) => {
+        const next = current.filter((candidate) => candidate !== project.id);
+        window.localStorage.setItem(RECENT_PROJECT_IDS_KEY, JSON.stringify(next));
+        return next;
+      });
+      setPendingProjectDelete(null);
+      setProjectDeleteIssueCount(null);
+      if (selectedProjectId === project.id) changeProject(GLOBAL_PROJECT_ID);
+      setAnnouncement(`已删除项目“${project.name}”`);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "PROJECT_NOT_EMPTY") {
+        const details = error.details as { issueCount: number };
+        setProjectDeleteIssueCount(details.issueCount);
+      } else {
+        setPendingProjectDelete(null);
+        setActionError(errorMessage(error));
+      }
+    } finally {
+      setDeletingProjectId(null);
     }
   }
 
@@ -2065,7 +2156,10 @@ export function App() {
                   aria-label="切换项目"
                   aria-haspopup="menu"
                   aria-expanded={projectMenuOpen}
-                  onClick={() => setProjectMenuOpen((current) => !current)}
+                  onClick={() => {
+                    setProjectContextMenu(null);
+                    setProjectMenuOpen((current) => !current);
+                  }}
                 >
                   <span className="project-name">{headerProjectName}</span>
                   <TaskboardIcon className="project-switcher-chevron" name="dropdown" />
@@ -2080,6 +2174,14 @@ export function App() {
                         aria-checked={project.id === selectedProjectId}
                         disabled={openingProjectId !== null}
                         key={project.id}
+                        onContextMenu={project.id.startsWith("temp-") ? (event) => {
+                          event.preventDefault();
+                          setProjectContextMenu({
+                            project,
+                            x: event.clientX,
+                            y: event.clientY,
+                          });
+                        } : undefined}
                         onClick={() => {
                           if (project.id === selectedProjectId) setProjectMenuOpen(false);
                           else void selectProject(project);
@@ -2094,7 +2196,7 @@ export function App() {
                       type="button"
                       role="menuitem"
                       disabled={openingProjectId !== null}
-                      onClick={() => void createTemporaryProject()}
+                      onClick={openCreateProjectDialog}
                     >
                       <TaskboardIcon className="project-avatar" name="create" />
                       <span>创建项目</span>
@@ -2417,6 +2519,135 @@ export function App() {
           </div>
         )}
       </main>
+
+      {projectContextMenu && (
+        <div
+          className="task-context-menu project-context-menu"
+          data-project-context-menu
+          role="menu"
+          aria-label={`项目“${projectContextMenu.project.name}”`}
+          style={{ left: projectContextMenu.x, top: projectContextMenu.y }}
+        >
+          <button
+            className="context-menu-item is-danger"
+            type="button"
+            role="menuitem"
+            onClick={() => requestProjectDelete(projectContextMenu.project)}
+          >
+            <span className="context-menu-icon" aria-hidden="true"><LinearIcon name="trash" /></span>
+            <span className="context-menu-label">删除项目</span>
+          </button>
+        </div>
+      )}
+
+      {projectCreateOpen && (
+        <div
+          className="delete-backdrop"
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) closeCreateProjectDialog();
+          }}
+        >
+          <form
+            className="delete-dialog project-create-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="project-create-title"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void createTemporaryProject();
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") closeCreateProjectDialog();
+            }}
+          >
+            <h2 id="project-create-title">创建项目</h2>
+            <label>
+              <span>项目名称</span>
+              <input
+                autoFocus
+                maxLength={120}
+                required
+                value={projectName}
+                onChange={(event) => setProjectName(event.target.value)}
+              />
+            </label>
+            {actionError && <p className="project-dialog-error">{actionError}</p>}
+            <div>
+              <button
+                className="button secondary"
+                type="button"
+                disabled={openingProjectId !== null}
+                onClick={closeCreateProjectDialog}
+              >
+                取消
+              </button>
+              <button
+                className="button primary"
+                type="submit"
+                disabled={!projectName.trim() || openingProjectId !== null}
+              >
+                {openingProjectId ? "创建中…" : "创建"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {pendingProjectDelete && (
+        <div
+          className="delete-backdrop"
+          onPointerDown={(event) => {
+            if (event.target === event.currentTarget) closeProjectDeleteDialog();
+          }}
+        >
+          <div
+            className="delete-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="project-delete-title"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") closeProjectDeleteDialog();
+            }}
+          >
+            {projectDeleteIssueCount === null ? (
+              <>
+                <h2 id="project-delete-title">删除项目“{pendingProjectDelete.name}”？</h2>
+                <p>仅空项目可以删除。删除后无法恢复。</p>
+                <div>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    disabled={deletingProjectId !== null}
+                    onClick={closeProjectDeleteDialog}
+                  >
+                    取消
+                  </button>
+                  <button
+                    className="button danger"
+                    type="button"
+                    disabled={deletingProjectId !== null}
+                    onClick={() => void deletePendingProject()}
+                  >
+                    {deletingProjectId ? "删除中…" : "删除项目"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h2 id="project-delete-title">无法删除项目“{pendingProjectDelete.name}”</h2>
+                <p>
+                  该项目还有 {projectDeleteIssueCount} 个议题（包含已归档议题）。请先移动或删除这些议题。
+                </p>
+                <div>
+                  <button className="button primary" type="button" onClick={closeProjectDeleteDialog}>
+                    知道了
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {editor && (
         <TaskEditor

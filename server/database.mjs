@@ -784,6 +784,28 @@ export class TaskboardDatabase {
     return this.getProject(input.id);
   }
 
+  deleteProject(id) {
+    const project = this.getProject(id);
+    if (!project) {
+      throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${id}' does not exist`);
+    }
+    if (!id.startsWith("temp-")) {
+      throw new ApiError(403, "PROJECT_DELETE_FORBIDDEN", "Only manually created projects can be deleted");
+    }
+    const result = this.database.prepare(`
+      DELETE FROM projects
+      WHERE id = ?
+        AND NOT EXISTS (SELECT 1 FROM tasks WHERE project_id = ?)
+    `).run(id, id);
+    if (result.changes !== 1) {
+      const issueCount = Number(this.database.prepare(`
+        SELECT COUNT(*) AS issue_count FROM tasks WHERE project_id = ?
+      `).get(id).issue_count);
+      throw new ApiError(409, "PROJECT_NOT_EMPTY", "Project still contains issues", { issueCount });
+    }
+    return project;
+  }
+
   getProject(id) {
     const row = this.database.prepare(`
       SELECT

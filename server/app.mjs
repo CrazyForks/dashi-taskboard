@@ -1894,6 +1894,25 @@ export function createTaskboardServer(options = {}) {
         return methodNotAllowed(response, ["GET", "POST"]);
       }
 
+      const projectRoute = pathname.match(/^\/api\/projects\/([^/]+)$/);
+      if (projectRoute) {
+        if ([...url.searchParams.keys()].length > 0) {
+          throw new ApiError(400, "UNKNOWN_QUERY_PARAMETER", "Project routes do not accept query parameters");
+        }
+        let projectId;
+        try {
+          projectId = decodeURIComponent(projectRoute[1]);
+        } catch {
+          throw new ApiError(400, "INVALID_PATH", "Project id contains invalid encoding");
+        }
+        validateProjectId(projectId);
+        if (request.method === "DELETE") {
+          database.deleteProject(projectId);
+          return sendEmpty(response, 204);
+        }
+        return methodNotAllowed(response, ["DELETE"]);
+      }
+
       const workflowWorkspaceRoute = pathname.match(/^\/api\/projects\/([^/]+)\/workflow-workspace$/);
       if (workflowWorkspaceRoute) {
         if ([...url.searchParams.keys()].length > 0) {
