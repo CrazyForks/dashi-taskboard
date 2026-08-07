@@ -2300,6 +2300,7 @@ export function App() {
                         contextMenuTaskId={contextMenu?.taskId ?? null}
                         onCreate={(initialStatus) => setEditor({ task: null, status: initialStatus })}
                         onEdit={openTaskDetail}
+                        onComplete={(task) => void moveTask(task, "done")}
                         onContextMenu={(task, position) => setContextMenu({ taskId: task.id, ...position })}
                         onDragStart={startTaskDrag}
                         onDragEnd={endTaskDrag}

@@ -74,6 +74,7 @@ interface BoardColumnProps {
   contextMenuTaskId: string | null;
   onCreate: (status: TaskStatus) => void;
   onEdit: (task: Task) => void;
+  onComplete: (task: Task) => void;
   onContextMenu: (task: Task, position: { x: number; y: number }) => void;
   onDragStart: (task: Task, height: number) => void;
   onDragEnd: () => void;
@@ -96,6 +97,7 @@ export function BoardColumn({
   contextMenuTaskId,
   onCreate,
   onEdit,
+  onComplete,
   onContextMenu,
   onDragStart,
   onDragEnd,
@@ -199,6 +201,7 @@ export function BoardColumn({
               isSettling={settlingTaskId === task.id}
               isContextMenuOpen={contextMenuTaskId === task.id}
               onEdit={onEdit}
+              onComplete={onComplete}
               onContextMenu={onContextMenu}
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}
