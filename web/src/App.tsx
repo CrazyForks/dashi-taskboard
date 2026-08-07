@@ -588,7 +588,7 @@ export function App() {
   const [settlingTaskId, setSettlingTaskId] = useState<string | null>(null);
   const [openingProjectId, setOpeningProjectId] = useState<string | null>(null);
   const [openingThreadTaskId, setOpeningThreadTaskId] = useState<string | null>(null);
-  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(true);
   const [deviceWorkspacePaths, setDeviceWorkspacePaths] = useState(readDeviceWorkspacePaths);
   const [projectAutomations, setProjectAutomations] = useState(readProjectAutomations);
   const [automationPending, setAutomationPending] = useState(false);
