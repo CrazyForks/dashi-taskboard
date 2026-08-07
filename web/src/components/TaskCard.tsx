@@ -10,6 +10,7 @@ import { ActorAvatar } from "./ActorAvatar";
 import { LinearPriorityIcon } from "./LinearIcon";
 import { TaskConversationMenu } from "./TaskConversationMenu";
 import { TaskboardIcon } from "./TaskboardIcon";
+import completeIcon from "../assets/figma-taskboard/card-complete.svg";
 import processingAnimation from "../assets/figma-taskboard/loading-16.svg";
 
 const PRIORITY_LABELS: Record<TaskPriority, string> = {
@@ -31,6 +32,7 @@ interface TaskCardProps {
   isSettling: boolean;
   isContextMenuOpen: boolean;
   onEdit: (task: Task) => void;
+  onComplete?: (task: Task) => void;
   onContextMenu: (task: Task, position: { x: number; y: number }) => void;
   onDragStart: (task: Task, height: number) => void;
   onDragEnd: () => void;
@@ -206,6 +208,7 @@ export function TaskCard({
   isSettling,
   isContextMenuOpen,
   onEdit,
+  onComplete,
   onContextMenu,
   onDragStart,
   onDragEnd,
@@ -264,6 +267,21 @@ export function TaskCard({
           <span className="task-identifier">ID: {task.identifier}</span>
         </span>
         {presentation.unread && <span className="task-unread-dot" aria-label="有未读更新" />}
+        {task.status === "in_review" && onComplete && (
+          <button
+            className="task-card-complete"
+            type="button"
+            aria-label={`完成 ${task.identifier}`}
+            title="完成"
+            onClick={(event) => {
+              event.stopPropagation();
+              onComplete(task);
+            }}
+          >
+            <img src={completeIcon} alt="" aria-hidden="true" />
+            <span>完成</span>
+          </button>
+        )}
         {variant === "sidebar" && (
           <span className="sidebar-card-creator">
             <ParticipantAvatars participants={task.participants.length ? task.participants : [creator]} />

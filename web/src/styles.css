@@ -8881,6 +8881,42 @@ kbd {
   min-height: 16px;
 }
 
+.task-card.status-in_review:hover .card-topline {
+  height: 20px;
+  min-height: 20px;
+}
+
+.task-card-complete {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 49px;
+  width: 49px;
+  height: 20px;
+  margin-left: 16px;
+  padding: 0 8px;
+  gap: 4px;
+  border: 0;
+  border-radius: 32px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 15px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.task-card.status-in_review:hover .task-card-complete {
+  display: inline-flex;
+}
+
+.task-card-complete img {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+}
+
 .card-reference {
   flex: 1 1 auto;
   max-width: 100%;
