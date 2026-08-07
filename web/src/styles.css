@@ -8923,7 +8923,7 @@ kbd {
   min-height: 16px;
 }
 
-.task-card.status-in_review:hover .card-topline {
+.task-card.status-in_review .card-topline {
   height: 20px;
   min-height: 20px;
 }
