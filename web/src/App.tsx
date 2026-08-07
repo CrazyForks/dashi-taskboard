@@ -42,6 +42,7 @@ import {
   updateTask as updateTaskRequest,
 } from "./api";
 import {
+  actorKey,
   actorForAssigneeTarget,
   assigneeTargetForActor,
 } from "./actors";
@@ -1704,10 +1705,14 @@ export function App() {
     const optimisticAssignee = assigneeTarget
       ? actorForAssigneeTarget(assigneeTarget, currentUser)
       : task.assignee;
+    const optimisticParticipants = assigneeTarget
+      && !task.participants.some((participant) => actorKey(participant) === actorKey(optimisticAssignee))
+      ? [...task.participants, optimisticAssignee]
+      : task.participants;
     setActionError(null);
     setTasks((current) => current.map((candidate) =>
       candidate.id === task.id
-        ? { ...candidate, ...taskChanges, assignee: optimisticAssignee }
+        ? { ...candidate, ...taskChanges, assignee: optimisticAssignee, participants: optimisticParticipants }
         : candidate,
     ));
 
@@ -2298,8 +2303,11 @@ export function App() {
                         movingTaskId={movingTaskId}
                         settlingTaskId={settlingTaskId}
                         contextMenuTaskId={contextMenu?.taskId ?? null}
+                        availableLabels={availableLabels}
+                        currentUser={currentUser}
                         onCreate={(initialStatus) => setEditor({ task: null, status: initialStatus })}
                         onEdit={openTaskDetail}
+                        onUpdate={updateTaskProperties}
                         onComplete={(task) => void moveTask(task, "done")}
                         onContextMenu={(task, position) => setContextMenu({ taskId: task.id, ...position })}
                         onDragStart={startTaskDrag}
@@ -2325,9 +2333,12 @@ export function App() {
                     movingTaskId={movingTaskId}
                     settlingTaskId={settlingTaskId}
                     contextMenuTaskId={contextMenu?.taskId ?? null}
+                    availableLabels={availableLabels}
+                    currentUser={currentUser}
                     onStatusChange={setOtherTasksStatus}
                     onCreate={(initialStatus) => setEditor({ task: null, status: initialStatus })}
                     onEdit={openTaskDetail}
+                    onUpdate={updateTaskProperties}
                     onContextMenu={(task, position) => setContextMenu({ taskId: task.id, ...position })}
                     onDragStart={startTaskDrag}
                     onDragEnd={endTaskDrag}
