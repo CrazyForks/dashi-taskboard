@@ -829,7 +829,9 @@ async function hydrateTask(env, row, activityComments = null, activityChanges = 
   };
   const comments = activityComments ?? await all(env.DB.prepare(`
     SELECT
-      id, task_id, body, thread_id, author_type, author_id, author_name,
+      id, task_id,
+      CASE WHEN thread_id IS NULL THEN NULL ELSE substr(body, 1, 512) END AS body,
+      thread_id, author_type, author_id, author_name,
       author_avatar_url, version, updated_at
     FROM comments
     WHERE task_id = ?
@@ -864,7 +866,9 @@ async function taskActivityComments(env, taskIds) {
     const placeholders = chunk.map(() => "?").join(", ");
     batches.push(all(env.DB.prepare(`
       SELECT
-        id, task_id, body, thread_id, author_type, author_id, author_name,
+        id, task_id,
+        CASE WHEN thread_id IS NULL THEN NULL ELSE substr(body, 1, 512) END AS body,
+        thread_id, author_type, author_id, author_name,
         author_avatar_url, version, updated_at
       FROM comments
       WHERE task_id IN (${placeholders})

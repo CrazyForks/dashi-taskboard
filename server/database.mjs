@@ -1822,7 +1822,9 @@ export class TaskboardDatabase {
       const placeholders = chunk.map(() => "?").join(", ");
       const rows = this.database.prepare(`
         SELECT
-          id, task_id, body, thread_id, author_type, author_id, author_name,
+          id, task_id,
+          CASE WHEN thread_id IS NULL THEN NULL ELSE substr(body, 1, 512) END AS body,
+          thread_id, author_type, author_id, author_name,
           author_avatar_url, version, updated_at
         FROM comments
         WHERE task_id IN (${placeholders})
