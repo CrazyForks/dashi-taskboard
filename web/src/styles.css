@@ -9578,6 +9578,10 @@ kbd {
       minmax(0, 0fr);
     column-gap: 0;
   }
+
+  .issue-board-layout[data-main-columns="3"] .other-tasks-panel {
+    box-shadow: -12px 0 30px rgba(0, 0, 0, 0.09);
+  }
 }
 
 @container issue-board-workspace (max-width: 1631px) {
@@ -9586,6 +9590,10 @@ kbd {
       repeat(var(--main-column-count), minmax(0, 1fr))
       minmax(0, 0fr);
     column-gap: 0;
+  }
+
+  .issue-board-layout[data-main-columns="4"] .other-tasks-panel {
+    box-shadow: -12px 0 30px rgba(0, 0, 0, 0.09);
   }
 }
 
