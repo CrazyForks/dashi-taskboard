@@ -1,5 +1,6 @@
 import path from "node:path";
 
+import { DEFAULT_PROJECT_ID } from "../shared/domain.mjs";
 import { normalizeCloudUrl } from "./cloud-config.mjs";
 
 const LOCAL_COMPANION_ROUTES = new Set([
@@ -137,13 +138,17 @@ async function localizeResponse(
   if (Array.isArray(payload.projects)) {
     payload.projects = payload.projects.map((project) => ({
       ...project,
-      workspacePath: config.projectMappings[project.id] ?? null,
+      workspacePath: project.id === DEFAULT_PROJECT_ID
+        ? null
+        : config.projectMappings[project.id] ?? null,
     }));
   }
   if (payload.project && typeof payload.project === "object") {
     payload.project = {
       ...payload.project,
-      workspacePath: config.projectMappings[payload.project.id] ?? null,
+      workspacePath: payload.project.id === DEFAULT_PROJECT_ID
+        ? null
+        : config.projectMappings[payload.project.id] ?? null,
     };
   }
   if (payload.task) {

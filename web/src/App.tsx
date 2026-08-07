@@ -204,7 +204,7 @@ const DEFAULT_USER_ACTOR: ActorIdentity = {
   avatarUrl: null,
 };
 
-const LAST_PROJECT_KEY = "taskboard.lastProjectId";
+const GLOBAL_PROJECT_ID = "local";
 const PROJECT_VIEW_KEY_PREFIX = "taskboard.project-view.v1.";
 const DEVICE_WORKSPACE_PATHS_KEY = "taskboard.deviceWorkspacePaths.v1";
 const PROJECT_AUTOMATIONS_KEY = "taskboard.projectAutomations.v1";
@@ -549,9 +549,10 @@ export function App() {
   >({});
   const [processingNow, setProcessingNow] = useState(() => Date.now());
   const [projects, setProjects] = useState<Project[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState(
+    () => query.get("project") ?? GLOBAL_PROJECT_ID,
+  );
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [projectsLoading, setProjectsLoading] = useState(true);
   const [tasksLoading, setTasksLoading] = useState(false);
   const [hasLoadedTasks, setHasLoadedTasks] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -559,7 +560,9 @@ export function App() {
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [search, setSearch] = useState("");
   const [filters, setFilters] = useState(readTaskFilters);
-  const [boardView, setBoardView] = useState<BoardView>(() => readProjectBoardView(query.get("project") ?? ""));
+  const [boardView, setBoardView] = useState<BoardView>(() => readProjectBoardView(
+    query.get("project") ?? GLOBAL_PROJECT_ID,
+  ));
   const [dashboardSummaryAnimatedProjectId, setDashboardSummaryAnimatedProjectId] = useState<string | null>(null);
   const [ganttZoom, setGanttZoom] = useState<GanttZoom>("week");
   const [ganttHideCompleted, setGanttHideCompleted] = useState(false);
@@ -613,6 +616,7 @@ export function App() {
   }, []);
 
   const rememberDeviceWorkspacePath = useCallback((projectId: string, workspacePath: string) => {
+    if (projectId === GLOBAL_PROJECT_ID) return;
     const normalizedPath = workspacePath.trim();
     setDeviceWorkspacePaths((current) => {
       if (current[projectId] === normalizedPath || (!normalizedPath && !(projectId in current))) {
@@ -628,7 +632,9 @@ export function App() {
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const currentUser = hostContext?.user ?? DEFAULT_USER_ACTOR;
-  const selectedDeviceWorkspacePath = deviceWorkspacePaths[selectedProjectId];
+  const selectedDeviceWorkspacePath = selectedProjectId === GLOBAL_PROJECT_ID
+    ? undefined
+    : deviceWorkspacePaths[selectedProjectId];
   const selectedProjectAutomation = projectAutomations[selectedProjectId];
   const automationProjectContext = useMemo(() => {
     if (!embedded || window.parent === window) {
@@ -710,14 +716,6 @@ export function App() {
     }
     return choices;
   }, [hostContext?.projects, projects]);
-  const projectsWithIssues = useMemo(
-    () => projectChoices.filter((project) => project.issueCount > 0),
-    [projectChoices],
-  );
-  const projectsWithoutIssues = useMemo(
-    () => projectChoices.filter((project) => project.issueCount === 0),
-    [projectChoices],
-  );
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
   const issueReadStorageKey = selectedProjectId
     ? `${ISSUE_READ_KEY_PREFIX}:${taskboardMetadata?.mode ?? "local"}:${selectedProjectId}`
@@ -1001,13 +999,11 @@ export function App() {
   useEffect(() => {
     function syncRouteFromLocation() {
       const url = new URL(window.location.href);
-      const routeProjectId = url.searchParams.get("project") ?? "";
+      const routeProjectId = url.searchParams.get("project") ?? GLOBAL_PROJECT_ID;
       setDetailTaskIdentifier(readIssueIdentifier(url.search));
       if (routeProjectId === selectedProjectId) return;
       setBoardView(readProjectBoardView(routeProjectId));
       setSelectedProjectId(routeProjectId);
-      if (routeProjectId) window.localStorage.setItem(LAST_PROJECT_KEY, routeProjectId);
-      else window.localStorage.removeItem(LAST_PROJECT_KEY);
     }
 
     window.addEventListener("popstate", syncRouteFromLocation);
@@ -1159,7 +1155,6 @@ export function App() {
   }, [detailTaskId, embedded, selectedProjectId]);
 
   const loadProjectList = useCallback(async (signal?: AbortSignal) => {
-    setProjectsLoading(true);
     setLoadError(null);
     try {
       const [nextProjects, metadata, workspaces] = await Promise.all([
@@ -1181,6 +1176,7 @@ export function App() {
       setLocalAiChatAvailable(metadata.capabilities?.localAiChat === true);
       setDeviceWorkspacePaths((current) => {
         const next = { ...current, ...workspaces };
+        delete next[GLOBAL_PROJECT_ID];
         if (JSON.stringify(next) === JSON.stringify(current)) return current;
         window.localStorage.setItem(DEVICE_WORKSPACE_PATHS_KEY, JSON.stringify(next));
         return next;
@@ -1188,16 +1184,14 @@ export function App() {
       setProjects(nextProjects);
       setSelectedProjectId((current) => {
         const fromQuery = new URLSearchParams(window.location.search).get("project");
-        const remembered = window.localStorage.getItem(LAST_PROJECT_KEY);
         if (fromQuery && nextProjects.some((project) => project.id === fromQuery)) return fromQuery;
         if (current && nextProjects.some((project) => project.id === current)) return current;
-        if (remembered && nextProjects.some((project) => project.id === remembered)) return remembered;
-        return "";
+        return nextProjects.find((project) => project.id === GLOBAL_PROJECT_ID)?.id
+          ?? nextProjects[0]?.id
+          ?? GLOBAL_PROJECT_ID;
       });
     } catch (error) {
       if ((error as Error).name !== "AbortError") setLoadError(errorMessage(error));
-    } finally {
-      setProjectsLoading(false);
     }
   }, []);
 
@@ -1274,7 +1268,7 @@ export function App() {
       return;
     }
     const controller = new AbortController();
-    const codexProjectId = selectedProjectId === "local" ? hostContext?.projectId : selectedProjectId;
+    const codexProjectId = selectedProjectId === GLOBAL_PROJECT_ID ? hostContext?.projectId : selectedProjectId;
     const codexThreadId = hostContext?.threadId ?? detailTask?.threadId ?? undefined;
     setDevelopmentScan({ workspacePath: selectedDeviceWorkspacePath ?? null, contexts: [] });
     setDevelopmentScanLoading(true);
@@ -1865,7 +1859,9 @@ export function App() {
         taskId: task.id,
         identifier: task.identifier,
         instruction,
-        codexProjectId: codexProject?.id ?? (selectedProject?.id === "local" ? hostContext?.projectId : selectedProject?.id),
+        codexProjectId: codexProject?.id ?? (
+          selectedProject?.id === GLOBAL_PROJECT_ID ? hostContext?.projectId : selectedProject?.id
+        ),
         projectName: selectedProject?.name,
         workspacePath,
         workspaceLabel: worktreePath ? workspaceName(worktreePath) : undefined,
@@ -1879,28 +1875,12 @@ export function App() {
     setDetailTaskIdentifier(null);
     setBoardView(readProjectBoardView(projectId));
     setSelectedProjectId(projectId);
-    window.localStorage.setItem(LAST_PROJECT_KEY, projectId);
     setSearch("");
     setFilters(EMPTY_TASK_FILTERS);
     setActionError(null);
     undoStackRef.current = [];
     const url = buildIssueUrl(window.location.href, projectId, null);
     window.history.replaceState(null, "", url);
-  }
-
-  function returnToProjectHome() {
-    closeContextMenu();
-    setProjectMenuOpen(false);
-    setDetailTaskIdentifier(null);
-    setSelectedProjectId("");
-    window.localStorage.removeItem(LAST_PROJECT_KEY);
-    setSearch("");
-    setFilters(EMPTY_TASK_FILTERS);
-    setActionError(null);
-    undoStackRef.current = [];
-    const url = buildIssueUrl(window.location.href, null, null);
-    window.history.replaceState(null, "", url);
-    void loadProjectList();
   }
 
   async function selectProject(choice: ProjectChoice) {
@@ -1970,21 +1950,6 @@ export function App() {
             </button>
           </nav>
 
-          <div className="project-nav">
-            <span className="nav-label">项目</span>
-            {projects.map((project) => (
-              <button
-                key={project.id}
-                type="button"
-                className={`project-nav-item${selectedProjectId === project.id ? " active" : ""}`}
-                onClick={() => changeProject(project.id)}
-              >
-                <span className="project-dot" aria-hidden="true" />
-                <span>{project.name}</span>
-              </button>
-            ))}
-          </div>
-
           <div className="nav-spacer" />
           <div className="nav-footer">
             <div className={`connection connection-${connection}`}>
@@ -2005,8 +1970,7 @@ export function App() {
       )}
 
       <main className="workspace">
-        {selectedProjectId ? (
-          <header className="workspace-header">
+        <header className="workspace-header">
           <div className="workspace-title">
             <div className="workspace-kicker">
               {detailTask && (
@@ -2031,69 +1995,41 @@ export function App() {
                   <LinearIcon name="codexSidebarExpand" />
                 </button>
               )}
-              {selectedProjectId && (
+              <div className="header-project-switcher" data-project-switcher>
                 <button
-                  className="detail-back-button project-home-button"
+                  className="header-project-button"
                   type="button"
-                  aria-label="返回项目首页"
-                  title="返回项目首页"
-                  onClick={returnToProjectHome}
+                  aria-label="切换项目"
+                  aria-haspopup="menu"
+                  aria-expanded={projectMenuOpen}
+                  onClick={() => setProjectMenuOpen((current) => !current)}
                 >
-                  <TaskboardIcon name="home" />
-                </button>
-              )}
-              {selectedProjectId && <span className="breadcrumb-chevron" aria-hidden="true"><TaskboardIcon name="breadcrumb" /></span>}
-              {selectedProjectId ? (
-                <div className="header-project-switcher" data-project-switcher>
-                  <button
-                    className="header-project-button"
-                    type="button"
-                    aria-label="切换项目"
-                    aria-haspopup="menu"
-                    aria-expanded={projectMenuOpen}
-                    onClick={() => setProjectMenuOpen((current) => !current)}
-                  >
-                    <span className="project-name">{headerProjectName}</span>
-                    <TaskboardIcon className="project-switcher-chevron" name="dropdown" />
-                  </button>
-                  {projectMenuOpen && (
-                    <div className="header-project-menu" role="menu" aria-label="项目">
-                      <span>切换项目</span>
-                      {projectChoices.map((project) => (
-                        <button
-                          type="button"
-                          role="menuitemradio"
-                          aria-checked={project.id === selectedProjectId}
-                          disabled={openingProjectId !== null}
-                          key={project.id}
-                          onClick={() => {
-                            if (project.id === selectedProjectId) setProjectMenuOpen(false);
-                            else void selectProject(project);
-                          }}
-                        >
-                          <span className="project-avatar" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span>
-                          <span>{project.name}</span>
-                          {project.id === selectedProjectId && <span className="project-menu-check" aria-hidden="true"><LinearIcon name="check" /></span>}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <>
-                  <span className="project-avatar" aria-hidden="true">
-                    {headerProjectName.slice(0, 1).toUpperCase()}
-                  </span>
                   <span className="project-name">{headerProjectName}</span>
-                </>
-              )}
-              {!selectedProjectId && (
-                <>
-                  <span className="breadcrumb-chevron" aria-hidden="true"><LinearIcon name="chevronRight" /></span>
-                  <strong>项目</strong>
-                </>
-              )}
-
+                  <TaskboardIcon className="project-switcher-chevron" name="dropdown" />
+                </button>
+                {projectMenuOpen && (
+                  <div className="header-project-menu" role="menu" aria-label="项目">
+                    <span>切换项目</span>
+                    {projectChoices.map((project) => (
+                      <button
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={project.id === selectedProjectId}
+                        disabled={openingProjectId !== null}
+                        key={project.id}
+                        onClick={() => {
+                          if (project.id === selectedProjectId) setProjectMenuOpen(false);
+                          else void selectProject(project);
+                        }}
+                      >
+                        <span className="project-avatar" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span>
+                        <span>{project.name}</span>
+                        {project.id === selectedProjectId && <span className="project-menu-check" aria-hidden="true"><LinearIcon name="check" /></span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -2122,10 +2058,7 @@ export function App() {
               </button>
             )}
           </div>
-          </header>
-        ) : (
-          <div ref={dragRegionRef} className="home-window-drag-region" aria-hidden="true" />
-        )}
+        </header>
 
         {selectedProjectId && !detailTask && <div className="board-toolbar">
           <div className="view-tabs" aria-label="看板视图">
@@ -2250,84 +2183,7 @@ export function App() {
           </div>
         )}
 
-        {!selectedProjectId ? (
-          <section className="project-home">
-            <div className="project-home-heading">
-              <span>任务面板</span>
-              <h1>选择项目</h1>
-              <p>从 Codex 项目开始，或继续使用之前保存的项目。</p>
-            </div>
-            {projectsLoading ? (
-              <div className="project-grid project-grid-loading" aria-label="正在加载项目" aria-busy="true">
-                <span /><span /><span />
-              </div>
-            ) : projectChoices.length > 0 ? (
-              <div className="project-home-groups">
-                {[
-                  { id: "with-issues", title: "已有议题", projects: projectsWithIssues },
-                  { id: "without-issues", title: "尚未添加议题", projects: projectsWithoutIssues },
-                ].map((group) => (
-                  <section className="project-home-group" key={group.id} aria-labelledby={`project-group-${group.id}`}>
-                    <div className="project-group-heading">
-                      <h2 id={`project-group-${group.id}`}>{group.title}</h2>
-                      <span>{group.projects.length}</span>
-                    </div>
-                    {group.projects.length > 0 ? (
-                      <div className="project-grid">
-                        {group.projects.map((project) => (
-                          <div className="project-card" key={project.id}>
-                            <button
-                              className="project-card-open"
-                              type="button"
-                              disabled={openingProjectId !== null}
-                              onClick={() => void selectProject(project)}
-                            >
-                              <span className="project-card-avatar" aria-hidden="true">
-                                {project.name.slice(0, 1).toUpperCase()}
-                              </span>
-                              <span className="project-card-copy">
-                                <strong>{project.name}</strong>
-                                <span>
-                                  {project.inCodex ? "Codex 项目" : "已保存的项目"}
-                                  {project.issueCount > 0 ? ` · ${project.issueCount} 个议题` : ""}
-                                </span>
-                              </span>
-                              <span className="project-card-action" aria-hidden="true">
-                                {openingProjectId === project.id ? "正在打开…" : <LinearIcon name="chevronRight" />}
-                              </span>
-                            </button>
-                            <label className="project-card-directory">
-                              <LinearIcon name="folder" />
-                              <input
-                                key={deviceWorkspacePaths[project.id] ?? ""}
-                                type="text"
-                                defaultValue={deviceWorkspacePaths[project.id] ?? ""}
-                                placeholder="设置此设备的项目目录"
-                                aria-label={`${project.name} 在此设备上的项目目录`}
-                                onBlur={(event) => rememberDeviceWorkspacePath(project.id, event.currentTarget.value)}
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter") event.currentTarget.blur();
-                                }}
-                              />
-                            </label>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="project-group-empty">暂无项目</p>
-                    )}
-                  </section>
-                ))}
-              </div>
-            ) : (
-              <div className="project-home-empty">
-                <span className="empty-orbit" aria-hidden="true"><i /><i /></span>
-                <h2>还没有项目</h2>
-                <p>在 Codex 中创建项目后，再打开任务面板。</p>
-              </div>
-            )}
-          </section>
-        ) : detailTask && selectedProject ? (
+        {detailTask && selectedProject ? (
           <TaskDetail
             key={detailTask.id}
             task={detailTask}
@@ -2390,8 +2246,8 @@ export function App() {
         ) : boardView === "workflow" ? (
           <Suspense fallback={<div className="workflow-board-loading">正在打开节点模式…</div>}>
             <WorkflowBoard
-              key={selectedProject?.id ?? "local"}
-              projectId={selectedProject?.id ?? "local"}
+              key={selectedProject?.id ?? GLOBAL_PROJECT_ID}
+              projectId={selectedProject?.id ?? GLOBAL_PROJECT_ID}
               projectName={selectedProject?.name ?? "当前项目"}
               workspacePath={
                 selectedDeviceWorkspacePath

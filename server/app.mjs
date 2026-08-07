@@ -1929,7 +1929,9 @@ export function createTaskboardServer(options = {}) {
         const project = currentCloudConfig.remoteUrl
           ? {
             id: projectId,
-            workspacePath: currentCloudConfig.projectMappings[projectId] ?? null,
+            workspacePath: projectId === DEFAULT_PROJECT_ID
+              ? null
+              : currentCloudConfig.projectMappings[projectId] ?? null,
           }
           : database.getProject(projectId);
         if (!project) throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${projectId}' does not exist`);
