@@ -1874,7 +1874,13 @@ export function createTaskboardServer(options = {}) {
           if ([...url.searchParams.keys()].length > 0) {
             throw new ApiError(400, "UNKNOWN_QUERY_PARAMETER", "GET /api/projects does not accept query parameters");
           }
-          return sendJson(response, 200, { projects: database.listProjects() });
+          const projects = database.listProjects().map((project) => ({
+            ...project,
+            workspacePath: project.id === DEFAULT_PROJECT_ID
+              ? null
+              : currentCloudConfig?.projectMappings[project.id] ?? project.workspacePath,
+          }));
+          return sendJson(response, 200, { projects });
         }
         if (request.method === "POST") {
           const project = database.createProject(parseProjectCreate(await readJson(request)));
