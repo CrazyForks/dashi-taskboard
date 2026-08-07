@@ -68,6 +68,7 @@ Read the issue immediately before a write and pass its `version` with `--if-vers
 
 ```bash
 taskctl issue update ID \
+  [--project PROJECT_ID] \
   [--title TITLE] \
   [--description TEXT | --description-file FILE] \
   [--status STATUS] \

@@ -1246,6 +1246,12 @@ export class TaskboardDatabase {
   updateTask(id, version, changes, threadId) {
     const current = this.#requireTask(id);
     this.#requireVersion(current, version);
+    const targetProject = Object.hasOwn(changes, "projectId")
+      ? this.database.prepare("SELECT id, name, workspace_path FROM projects WHERE id = ?").get(changes.projectId)
+      : null;
+    if (Object.hasOwn(changes, "projectId") && !targetProject) {
+      throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${changes.projectId}' does not exist`);
+    }
     const dueDate = Object.hasOwn(changes, "dueDate") ? changes.dueDate : current.dueDate;
     const recurrence = Object.hasOwn(changes, "recurrence") ? changes.recurrence : current.recurrence;
     if (recurrence && !dueDate) {
@@ -1253,6 +1259,7 @@ export class TaskboardDatabase {
     }
 
     const columns = {
+      projectId: "project_id",
       title: "title",
       description: "description",
       status: "status",
@@ -1316,6 +1323,23 @@ export class TaskboardDatabase {
       `).run(...values);
       if (result.changes !== 1) {
         this.#throwMissingOrConflict(id, version);
+      }
+      if (targetProject && targetProject.id !== current.projectId) {
+        this.database.prepare(`
+          UPDATE ai_chat_threads
+          SET origin_project_id = ?, origin_project_name = ?, origin_workspace_path = ?, updated_at = ?
+          WHERE origin_issue_id = ? AND origin_project_id = ?
+        `).run(
+          targetProject.id,
+          targetProject.name,
+          targetProject.workspace_path ?? "",
+          timestamp,
+          current.id,
+          current.projectId,
+        );
+        this.database.prepare(`
+          UPDATE projects SET updated_at = ? WHERE id IN (?, ?)
+        `).run(timestamp, current.projectId, targetProject.id);
       }
       this.database.exec("COMMIT");
     } catch (error) {

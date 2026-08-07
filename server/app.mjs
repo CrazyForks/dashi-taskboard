@@ -600,13 +600,14 @@ function parseTaskCreate(body) {
 function parseTaskPatch(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
-    "version", "title", "description", "status", "priority", "labels", "threadId",
+    "version", "projectId", "title", "description", "status", "priority", "labels", "threadId",
     "assigneeTarget", "workflowId", "developmentContext", "startDate", "dueDate", "recurrence",
   ]));
   const version = parseVersion(body.version);
   const threadId = parseThreadId(body.threadId);
   const assigneeTarget = parseAssigneeTarget(body.assigneeTarget);
   const changes = {};
+  if (body.projectId !== undefined) changes.projectId = validateProjectId(body.projectId);
   if (body.title !== undefined) changes.title = stringField(body.title, "title", { required: true, maxLength: 240 });
   if (body.description !== undefined) changes.description = stringField(body.description, "description", { maxLength: 100_000 });
   if (body.status !== undefined) changes.status = parseStatus(body.status);

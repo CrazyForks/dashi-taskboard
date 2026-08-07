@@ -51,6 +51,7 @@ const COMMAND_OPTIONS = new Map([
   [
     "issue update",
     new Set([
+      "project",
       "title",
       "description",
       "description-file",
@@ -518,6 +519,7 @@ async function updateIssue(api, taskId, options, overrides) {
   const recurrence = recurrenceFromOptions(options);
   const threadId = resolveThreadId(options, overrides);
   const patch = {
+    ...optionalField("projectId", options.project),
     ...optionalField("title", options.title),
     ...optionalField("status", options.status),
     ...optionalField("priority", options.priority),
