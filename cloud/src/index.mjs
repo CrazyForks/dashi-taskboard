@@ -1422,14 +1422,12 @@ async function updateTask(env, id, input, actor) {
   const projectChanged = targetProject && targetProject.id !== currentTask.projectId;
   const statusChanged = Object.hasOwn(input.changes, "status")
     && input.changes.status !== currentTask.status;
-  if (projectChanged || statusChanged) {
-    const targetProjectId = targetProject?.id ?? currentTask.projectId;
-    const targetStatus = input.changes.status ?? currentTask.status;
+  if (statusChanged) {
     const row = await env.DB.prepare(`
       SELECT MIN(sort_order) AS minimum
       FROM tasks
       WHERE project_id = ? AND status = ? AND archived_at IS NULL AND id != ?
-    `).bind(targetProjectId, targetStatus, current.id).first();
+    `).bind(current.project_id, input.changes.status, current.id).first();
     assignments.push("sort_order = ?");
     values.push(row?.minimum == null ? 1000 : row.minimum - 1000);
   }

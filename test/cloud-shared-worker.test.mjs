@@ -221,7 +221,7 @@ test("PATCH moves an issue to an existing project and records the change", async
   assert.equal(moved.response.status, 200, JSON.stringify(moved.body));
   assert.equal(moved.body.task.projectId, "move-target");
   assert.equal(moved.body.task.status, "todo");
-  assert.equal(moved.body.task.sortOrder, 4000);
+  assert.equal(moved.body.task.sortOrder, sourceTask.body.task.sortOrder);
   assert.equal(moved.body.task.threadId, "thread-to-preserve");
   assert.equal(moved.body.task.version, sourceTask.body.task.version + 1);
   const projects = await cloud.db.prepare(`
