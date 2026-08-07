@@ -314,6 +314,12 @@ export async function createProject(input: {
   return data.project;
 }
 
+export async function deleteProject(projectId: string): Promise<void> {
+  await request(`/api/projects/${encodeURIComponent(projectId)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function listDevelopmentContexts(
   projectId: string,
   codexProjectId?: string,

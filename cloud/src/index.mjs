@@ -1250,6 +1250,28 @@ async function createProject(env, input) {
   return getProject(env, input.id);
 }
 
+async function deleteProject(env, id) {
+  const project = await getProject(env, id);
+  if (!project) {
+    throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${id}' does not exist`);
+  }
+  if (!id.startsWith("temp-")) {
+    throw new ApiError(403, "PROJECT_DELETE_FORBIDDEN", "Only manually created projects can be deleted");
+  }
+  const result = await env.DB.prepare(`
+    DELETE FROM projects
+    WHERE id = ?
+      AND NOT EXISTS (SELECT 1 FROM tasks WHERE project_id = ?)
+  `).bind(id, id).run();
+  if (!changed(result)) {
+    const issueCount = Number(await env.DB.prepare(`
+      SELECT COUNT(*) AS issue_count FROM tasks WHERE project_id = ?
+    `).bind(id).first("issue_count"));
+    throw new ApiError(409, "PROJECT_NOT_EMPTY", "Project still contains issues", { issueCount });
+  }
+  return project;
+}
+
 async function listTasks(env, filters) {
   const where = [];
   const values = [];
@@ -2286,6 +2308,15 @@ async function routeApi(request, env, actor, url) {
       });
     }
     methodNotAllowed(["GET", "POST"]);
+  }
+
+  const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
+  if (projectMatch) {
+    requireNoQuery(url, "Project routes");
+    const projectId = validateProjectId(decodePathPart(projectMatch[1], "Project id"));
+    if (request.method !== "DELETE") methodNotAllowed(["DELETE"]);
+    await deleteProject(env, projectId);
+    return empty(204);
   }
 
   const workflowMatch = pathname.match(
