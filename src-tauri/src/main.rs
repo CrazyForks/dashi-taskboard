@@ -51,7 +51,7 @@ struct LauncherState {
 }
 
 impl LauncherState {
-    fn new(data_directory: PathBuf, log_directory: PathBuf) -> Self {
+    fn new(data_directory: PathBuf, log_directory: PathBuf, version: String) -> Self {
         Self {
             child: Mutex::new(None),
             snapshot: Mutex::new(LauncherSnapshot {
@@ -59,7 +59,7 @@ impl LauncherState {
                 message: "正在启动任务面板…".into(),
                 update_message: "启动后将自动检查更新。".into(),
                 update_available: false,
-                version: env!("CARGO_PKG_VERSION").into(),
+                version,
                 app_path: None,
                 child_pid: None,
             }),
@@ -522,7 +522,8 @@ fn main() {
             let log_directory = home_directory.join("Library/Logs/Codex Taskboard");
             fs::create_dir_all(&data_directory)?;
             fs::create_dir_all(&log_directory)?;
-            let state = Arc::new(LauncherState::new(data_directory, log_directory));
+            let version = app.package_info().version.to_string();
+            let state = Arc::new(LauncherState::new(data_directory, log_directory, version));
             app.manage(state.clone());
 
             let app_handle = app.handle().clone();
