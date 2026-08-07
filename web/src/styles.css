@@ -703,16 +703,9 @@ kbd {
 }
 
 .project-avatar {
-  display: grid;
-  place-items: center;
   flex: 0 0 auto;
   width: 16px;
   height: 16px;
-  border-radius: 5px;
-  background: var(--text-primary);
-  color: var(--header-bg);
-  font-size: 8px;
-  font-weight: 650;
 }
 
 .project-name {
@@ -811,8 +804,8 @@ kbd {
 }
 
 .header-project-menu .project-avatar {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
 }
 
 .project-menu-check {
