@@ -1,0 +1,40 @@
+name: Apply reviewed PR fixes
+
+on:
+  push:
+    branches:
+      - codex/taskboard-current-snapshot-20260806
+    paths:
+      - .github/workflows/apply-review-fixes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify and apply reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/review-fixes.patch.part-* > /tmp/review-fixes.patch
+          echo "63a11ec41a5cb03114bd8661599835d2edc6dedc03c9483698af9d0b5a4f3f38  /tmp/review-fixes.patch" | sha256sum --check
+          git apply --check /tmp/review-fixes.patch
+          git apply /tmp/review-fixes.patch
+          rm -f .github/review-fixes.patch.part-*
+          rm -f .github/workflows/apply-review-fixes.yml
+          git diff --check
+      - name: Commit reviewed fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: close second-round PR review findings"
+          git push origin HEAD:codex/taskboard-current-snapshot-20260806
