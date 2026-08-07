@@ -2078,7 +2078,6 @@ kbd {
   pointer-events: auto;
 }
 
-.priority-chip select,
 .due-date-chip input,
 .task-participants-control select {
   position: absolute;
@@ -2093,7 +2092,6 @@ kbd {
   cursor: pointer;
 }
 
-.priority-chip:has(select:focus-visible),
 .due-date-chip:has(input:focus-visible),
 .task-participants-control:has(select:focus-visible),
 .card-label-trigger:focus-visible {
@@ -4209,6 +4207,32 @@ kbd {
 
 .detail-property-row select {
   appearance: none;
+}
+
+.detail-property-picker {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  width: 100%;
+}
+
+.detail-property-trigger {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 26px;
+  gap: 9px;
+  padding: 0 9px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+}
+
+.detail-property-trigger:hover {
+  color: var(--text-primary);
 }
 
 .detail-label-picker {
@@ -6403,6 +6427,38 @@ kbd {
   display: inline-flex;
 }
 
+.task-property-picker {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.task-property-trigger-icon,
+.task-property-option-icon,
+.task-property-option-check {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+}
+
+.task-property-trigger-icon svg,
+.task-property-option-icon svg,
+.task-property-option-check svg,
+.task-property-trigger-icon .taskboard-icon,
+.task-property-option-icon .taskboard-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.task-property-trigger-label,
+.task-property-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer-popover {
   position: absolute;
   z-index: 30;
@@ -6418,6 +6474,66 @@ kbd {
 .label-popover {
   width: 207px;
   max-height: 402px;
+}
+
+.task-property-popover {
+  z-index: 1400;
+  width: 207px;
+  max-height: min(402px, calc(100vh - 16px));
+  padding: 6px;
+}
+
+.task-property-options {
+  display: flex;
+  flex-direction: column;
+  max-height: min(390px, calc(100vh - 28px));
+  overflow-y: auto;
+}
+
+.task-property-option {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 32px;
+  gap: 10px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+}
+
+.task-property-option:hover,
+.task-property-option:focus-visible {
+  outline: 0;
+  background: var(--surface-hover);
+}
+
+.task-property-option-label {
+  flex: 1 1 auto;
+  font-weight: 500;
+}
+
+.task-property-option-check {
+  margin-left: auto;
+  color: var(--text-tertiary);
+}
+
+.task-property-option.priority-urgent .task-property-option-icon,
+.task-property-option.priority-high .task-property-option-icon {
+  color: #ff7236;
+}
+
+.task-property-option.priority-medium .task-property-option-icon {
+  color: var(--warning);
+}
+
+.task-property-option.priority-low .task-property-option-icon,
+.task-property-option.priority-none .task-property-option-icon {
+  color: var(--text-tertiary);
 }
 
 .label-popover > input {
@@ -10963,6 +11079,17 @@ kbd {
 
 .issue-list-priority { width: max-content; }
 
+.issue-list-priority-control,
+.issue-list-property-picker {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.issue-list-priority {
+  background: transparent;
+  cursor: pointer;
+}
+
 .issue-list-priority:hover,
 .issue-list-date:hover { background: var(--surface-active); }
 
@@ -10971,18 +11098,6 @@ kbd {
   flex: 0 0 auto;
   width: 12px;
   height: 12px;
-}
-
-.issue-list-priority select {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  outline: 0;
-  opacity: 0;
-  appearance: none;
-  cursor: pointer;
 }
 
 .issue-list-priority.priority-urgent { color: #ff6542; }

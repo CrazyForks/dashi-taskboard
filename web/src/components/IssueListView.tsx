@@ -7,6 +7,7 @@ import { ActorAvatar } from "./ActorAvatar";
 import { STATUS_DETAILS, StatusIcon } from "./BoardColumn";
 import { LinearIcon, LinearPriorityIcon } from "./LinearIcon";
 import { TaskConversationMenu } from "./TaskConversationMenu";
+import { TaskPropertyPicker } from "./TaskPropertyPicker";
 import { TaskboardIcon } from "./TaskboardIcon";
 
 const PRIORITY_LABELS: Record<TaskPriority, string> = {
@@ -48,6 +49,7 @@ export function IssueListView({
   onUpdate,
 }: IssueListViewProps) {
   const [collapsed, setCollapsed] = useState(() => new Set(COLLAPSED_BY_DEFAULT));
+  const [priorityMenuTaskId, setPriorityMenuTaskId] = useState<string | null>(null);
 
   function stopRow(event: MouseEvent | KeyboardEvent) {
     event.stopPropagation();
@@ -97,17 +99,23 @@ export function IssueListView({
                           {presentations[task.id]?.unread && <span className="task-unread-dot" aria-label="有未读更新" />}
                         </span>
                         <span className="issue-list-metadata" aria-label="议题属性">
-                          <label className={`issue-list-priority priority-${task.priority}`} onClick={stopRow}>
-                            <LinearPriorityIcon priority={task.priority} />
-                            <span>{PRIORITY_LABELS[task.priority]}</span>
-                            <select
-                              aria-label={`${task.identifier} 优先级`}
+                          <span className="issue-list-priority-control" onClick={stopRow} onKeyDown={stopRow}>
+                            <TaskPropertyPicker
                               value={task.priority}
-                              onChange={(event) => void onUpdate(task, { priority: event.target.value as TaskPriority }).catch(() => {})}
-                            >
-                              {TASK_PRIORITIES.map((value) => <option value={value} key={value}>{PRIORITY_LABELS[value]}</option>)}
-                            </select>
-                          </label>
+                              options={TASK_PRIORITIES.map((priority) => ({
+                                value: priority,
+                                label: PRIORITY_LABELS[priority],
+                                icon: <LinearPriorityIcon priority={priority} />,
+                                className: `priority-${priority}`,
+                              }))}
+                              open={priorityMenuTaskId === task.id}
+                              className="issue-list-property-picker"
+                              triggerClassName={`issue-list-priority priority-${task.priority}`}
+                              ariaLabel={`${task.identifier} 优先级`}
+                              onOpenChange={(open) => setPriorityMenuTaskId(open ? task.id : null)}
+                              onChange={(priority) => void onUpdate(task, { priority }).catch(() => {})}
+                            />
+                          </span>
                           <span className="issue-list-labels">
                             {task.labels.slice(0, 2).map((label) => {
                               const presentation = labelPresentation(label);

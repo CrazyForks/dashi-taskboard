@@ -17,6 +17,7 @@ import type {
 import { ActorAvatar } from "./ActorAvatar";
 import { LinearPriorityIcon } from "./LinearIcon";
 import { LabelPicker } from "./LabelPicker";
+import { TaskPropertyPicker } from "./TaskPropertyPicker";
 import { TaskConversationMenu } from "./TaskConversationMenu";
 import { TaskboardIcon } from "./TaskboardIcon";
 import completeIcon from "../assets/figma-taskboard/card-complete.svg";
@@ -197,27 +198,34 @@ function TaskLabels({ task }: { task: Task }) {
 function PriorityControl({
   task,
   disabled,
+  open,
+  onOpenChange,
   onChange,
 }: {
   task: Task;
   disabled: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onChange: (priority: TaskPriority) => void;
 }) {
   return (
-    <label className={`priority-chip priority-chip-${task.priority} card-property-control`} title={`优先级：${PRIORITY_LABELS[task.priority]}`}>
-      <LinearPriorityIcon priority={task.priority} />
-      <span>{PRIORITY_LABELS[task.priority]}</span>
-      <select
-        aria-label={`${task.identifier} 优先级`}
-        value={task.priority}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.value as TaskPriority)}
-      >
-        {TASK_PRIORITIES.map((priority) => (
-          <option value={priority} key={priority}>{PRIORITY_LABELS[priority]}</option>
-        ))}
-      </select>
-    </label>
+    <TaskPropertyPicker
+      value={task.priority}
+      options={TASK_PRIORITIES.map((priority) => ({
+        value: priority,
+        label: PRIORITY_LABELS[priority],
+        icon: <LinearPriorityIcon priority={priority} />,
+        className: `priority-${priority}`,
+      }))}
+      open={open}
+      disabled={disabled}
+      className="card-property-control"
+      triggerClassName={`priority-chip priority-chip-${task.priority}`}
+      ariaLabel={`${task.identifier} 优先级`}
+      title={`优先级：${PRIORITY_LABELS[task.priority]}`}
+      onOpenChange={onOpenChange}
+      onChange={onChange}
+    />
   );
 }
 
@@ -305,7 +313,7 @@ export function TaskCard({
   onDragEnd,
   onOpenConversation,
 }: TaskCardProps) {
-  const [labelMenuOpen, setLabelMenuOpen] = useState(false);
+  const [propertyMenu, setPropertyMenu] = useState<"priority" | "labels" | null>(null);
   const [savingProperty, setSavingProperty] = useState<"priority" | "labels" | "dueDate" | "assignee" | null>(null);
   const creator: ActorIdentity = {
     type: task.creatorType,
@@ -337,7 +345,7 @@ export function TaskCard({
 
   return (
     <article
-      className={`task-card task-card-${variant} status-${task.status}${processingCard ? " is-processing-card" : ""}${processingCard && presentation.processing.running ? " is-running-card" : ""}${image ? " has-media" : ""}${presentation.unread ? " is-unread" : ""}${isDragging ? " is-dragging" : ""}${dragShift ? " is-drag-shifted" : ""}${isMoving ? " is-moving" : ""}${isSettling ? " is-settling" : ""}${isContextMenuOpen ? " is-context-open" : ""}${labelMenuOpen ? " is-property-menu-open" : ""}`}
+      className={`task-card task-card-${variant} status-${task.status}${processingCard ? " is-processing-card" : ""}${processingCard && presentation.processing.running ? " is-running-card" : ""}${image ? " has-media" : ""}${presentation.unread ? " is-unread" : ""}${isDragging ? " is-dragging" : ""}${dragShift ? " is-drag-shifted" : ""}${isMoving ? " is-moving" : ""}${isSettling ? " is-settling" : ""}${isContextMenuOpen ? " is-context-open" : ""}${propertyMenu ? " is-property-menu-open" : ""}`}
       style={dragShift ? { transform: `translate3d(0, ${dragShift}px, 0)` } : undefined}
       draggable={!isMoving}
       aria-labelledby={`task-${task.id}-title`}
@@ -409,6 +417,8 @@ export function TaskCard({
             <PriorityControl
               task={task}
               disabled={propertyDisabled}
+              open={propertyMenu === "priority"}
+              onOpenChange={(open) => setPropertyMenu(open ? "priority" : null)}
               onChange={(priority) => updateProperty({ priority }, "priority")}
             />
           )}
@@ -416,12 +426,12 @@ export function TaskCard({
             <LabelPicker
               availableLabels={availableLabels}
               selectedLabels={task.labels}
-              open={labelMenuOpen}
+              open={propertyMenu === "labels"}
               disabled={propertyDisabled}
               className="card-label-picker card-property-control"
               triggerClassName="card-label-trigger"
               triggerContent={<TaskLabels task={task} />}
-              onOpenChange={setLabelMenuOpen}
+              onOpenChange={(open) => setPropertyMenu(open ? "labels" : null)}
               onChange={(labels) => updateProperty({ labels }, "labels")}
             />
           )}
