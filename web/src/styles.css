@@ -2067,6 +2067,69 @@ kbd {
   pointer-events: auto;
 }
 
+.task-card.is-property-menu-open {
+  z-index: 40;
+  overflow: visible;
+}
+
+.card-property-control {
+  position: relative;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.priority-chip select,
+.due-date-chip input,
+.task-participants-control select {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  opacity: 0;
+  appearance: none;
+  cursor: pointer;
+}
+
+.priority-chip:has(select:focus-visible),
+.due-date-chip:has(input:focus-visible),
+.task-participants-control:has(select:focus-visible),
+.card-label-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.card-label-picker {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.card-label-trigger {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  height: 20px;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.card-label-picker .label-popover {
+  top: 24px;
+}
+
+.task-participants-control {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
 .card-topline {
   position: relative;
   height: 16px;

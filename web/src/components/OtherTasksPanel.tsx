@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DragEvent } from "react";
-import type { Task, TaskStatus } from "../types";
+import type { ActorIdentity, Task, TaskDraft, TaskStatus } from "../types";
 import type { TaskCardPresentation, TaskConversationItem } from "../taskConversations";
 import {
   SECONDARY_STATUSES,
@@ -24,9 +24,12 @@ interface OtherTasksPanelProps {
   movingTaskId: string | null;
   settlingTaskId: string | null;
   contextMenuTaskId: string | null;
+  availableLabels: string[];
+  currentUser: ActorIdentity;
   onStatusChange: (status: SecondaryTaskStatus) => void;
   onCreate: (status: SecondaryTaskStatus) => void;
   onEdit: (task: Task) => void;
+  onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
   onContextMenu: (task: Task, position: { x: number; y: number }) => void;
   onDragStart: (task: Task, height: number) => void;
   onDragEnd: () => void;
@@ -48,9 +51,12 @@ export function OtherTasksPanel({
   movingTaskId,
   settlingTaskId,
   contextMenuTaskId,
+  availableLabels,
+  currentUser,
   onStatusChange,
   onCreate,
   onEdit,
+  onUpdate,
   onContextMenu,
   onDragStart,
   onDragEnd,
@@ -176,7 +182,10 @@ export function OtherTasksPanel({
               isMoving={movingTaskId === task.id}
               isSettling={settlingTaskId === task.id}
               isContextMenuOpen={contextMenuTaskId === task.id}
+              availableLabels={availableLabels}
+              currentUser={currentUser}
               onEdit={onEdit}
+              onUpdate={onUpdate}
               onContextMenu={onContextMenu}
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}
