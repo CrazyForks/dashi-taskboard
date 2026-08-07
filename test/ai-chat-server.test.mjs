@@ -159,6 +159,49 @@ test("loopback AI API freezes server-owned origin and rejects injected execution
   }
 });
 
+test("non-local AI threads reject projects without an available workspace", async () => {
+  const fixture = await createServerFixture();
+  try {
+    const project = await request(fixture.baseUrl, "/api/projects", {
+      method: "POST",
+      body: {
+        id: "missing-workspace",
+        name: "Missing workspace",
+        workspacePath: path.join(fixture.directory, "missing-workspace"),
+      },
+    });
+    assert.equal(project.response.status, 201);
+
+    const created = await request(fixture.baseUrl, "/api/local/ai/threads", {
+      method: "POST",
+      body: { projectId: "missing-workspace" },
+    });
+    assert.equal(created.response.status, 409);
+    assert.equal(created.body.error.code, "PROJECT_WORKSPACE_UNAVAILABLE");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("the local AI project falls back to the Taskboard workspace", async () => {
+  const fixture = await createServerFixture();
+  try {
+    await writeFile(
+      path.join(fixture.directory, "codex-state.json"),
+      JSON.stringify({ "local-projects": {} }),
+    );
+
+    const created = await request(fixture.baseUrl, "/api/local/ai/threads", {
+      method: "POST",
+      body: { projectId: "local" },
+    });
+    assert.equal(created.response.status, 201);
+    assert.equal(created.body.thread.origin.workspacePath, path.resolve(import.meta.dirname, ".."));
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("danger-full-access requires confirmation on every turn and thread settings are validated", async () => {
   const fixture = await createServerFixture();
   try {
