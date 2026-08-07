@@ -58,6 +58,9 @@ import {
   IssueSubIssues,
   type RelationMutationResult,
 } from "./IssueRelations";
+import { buildIssueUrl } from "../issueRoute";
+import copyIdIcon from "../assets/figma-taskboard/copy-id.svg";
+import copyLinkIcon from "../assets/figma-taskboard/copy-link.svg";
 
 const PRIORITY_DETAILS: Record<TaskPriority, { label: string; bars: number }> = {
   none: { label: "无优先级", bars: 0 },
@@ -90,6 +93,7 @@ interface TaskDetailProps {
   ) => Promise<RelationMutationResult>;
   onOpenThread: (threadId: string) => void;
   onOpenInThread: (task: Task) => void;
+  onCopy: (text: string, announcement: string) => void;
   openingThread: boolean;
   onError: (message: string | null) => void;
 }
@@ -194,6 +198,7 @@ export function TaskDetail({
   onRemoveRelation,
   onOpenThread,
   onOpenInThread,
+  onCopy,
   openingThread,
   onError,
 }: TaskDetailProps) {
@@ -985,15 +990,42 @@ export function TaskDetail({
           </div>
 
           <aside className="issue-properties" aria-label="议题属性">
-            <button
-              className="detail-open-thread-action"
-              type="button"
-              disabled={openingThread}
-              onClick={() => onOpenInThread(currentTask)}
-            >
-              <ActorAvatar actor={CODEX_AGENT_ACTOR} className="detail-thread-avatar" />
-              <span>{openingThread ? "正在打开…" : "在对话中打开"}</span>
-            </button>
+            <div className="detail-primary-actions">
+              <button
+                className="detail-open-thread-action"
+                type="button"
+                disabled={openingThread}
+                onClick={() => onOpenInThread(currentTask)}
+              >
+                <ActorAvatar actor={CODEX_AGENT_ACTOR} className="detail-thread-avatar" />
+                <span>{openingThread ? "正在打开…" : "在对话中打开"}</span>
+              </button>
+              <button
+                className="detail-copy-action"
+                type="button"
+                title={`复制议题 ID ${currentTask.identifier}`}
+                onClick={() => onCopy(currentTask.identifier, `${currentTask.identifier} 已复制。`)}
+              >
+                <span className="detail-copy-action-icon" aria-hidden="true"><img src={copyIdIcon} alt="" /></span>
+                <span className="detail-copy-action-label">复制 ID</span>
+                <span className="detail-copy-identifier">{currentTask.identifier}</span>
+              </button>
+              <button
+                className="detail-copy-action"
+                type="button"
+                onClick={() => onCopy(
+                  buildIssueUrl(
+                    window.location.href,
+                    currentTask.projectId,
+                    currentTask.identifier,
+                  ).href,
+                  "议题链接已复制。",
+                )}
+              >
+                <span className="detail-copy-action-icon" aria-hidden="true"><img src={copyLinkIcon} alt="" /></span>
+                <span className="detail-copy-action-label">复制链接</span>
+              </button>
+            </div>
             <h2>属性</h2>
             <label className="detail-property-row">
               <span className={`detail-property-icon status-icon-${STATUS_DETAILS[currentTask.status].tone}`}><StatusIcon status={currentTask.status} /></span>
