@@ -310,7 +310,7 @@ export function TaskDetail({
     () => createInlineMediaSegments(task.description),
   );
   const [editingDescription, setEditingDescription] = useState(false);
-  const [propertyMenu, setPropertyMenu] = useState<"status" | "priority" | "labels" | null>(null);
+  const [propertyMenu, setPropertyMenu] = useState<"status" | "priority" | "assignee" | "labels" | null>(null);
   const [savingProperty, setSavingProperty] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachmentsLoading, setAttachmentsLoading] = useState(true);
@@ -1227,28 +1227,30 @@ export function TaskDetail({
                 onChange={(priority) => void saveTask({ priority }, "priority")}
               />
             </div>
-            <label className="detail-property-row assignee-property">
-              <ActorAvatar actor={currentTask.assignee} className="detail-assignee-avatar" />
+            <div className="detail-property-row assignee-property">
               <span className="detail-property-label">负责人</span>
-              <select
-                aria-label="负责人"
+              <TaskPropertyPicker
                 value={actorKey(currentTask.assignee)}
+                options={assigneeOptions.map((actor) => ({
+                  value: actorKey(actor),
+                  label: actor.id === currentUser.id ? `${actor.name}（我）` : actor.name,
+                  icon: <ActorAvatar actor={actor} className="task-property-assignee-avatar" />,
+                }))}
+                open={propertyMenu === "assignee"}
                 disabled={savingProperty === "assignee"}
-                onChange={(event) => {
-                  const selected = assigneeOptions.find((actor) => actorKey(actor) === event.target.value);
+                className="detail-property-picker"
+                triggerClassName="detail-property-trigger"
+                ariaLabel="负责人"
+                onOpenChange={(open) => setPropertyMenu(open ? "assignee" : null)}
+                onChange={(value) => {
+                  const selected = assigneeOptions.find((actor) => actorKey(actor) === value);
                   const assigneeTarget = selected
                     ? assigneeTargetForActor(selected, currentUser)
                     : undefined;
-                  if (assigneeTarget) void saveTask({ assigneeTarget: assigneeTarget }, "assignee");
+                  if (assigneeTarget) void saveTask({ assigneeTarget }, "assignee");
                 }}
-              >
-                {assigneeOptions.map((actor) => (
-                  <option value={actorKey(actor)} key={actorKey(actor)}>
-                    {actor.id === currentUser.id ? `${actor.name}（我）` : actor.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+              />
+            </div>
             <div className="detail-property-row labels-property">
               <span className="detail-property-icon" aria-hidden="true">
                 <LinearIcon name="label" />

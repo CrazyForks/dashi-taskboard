@@ -145,7 +145,7 @@ export function TaskEditor({
   const [startDate] = useState(task?.startDate ?? initialDraft?.startDate ?? "");
   const [dueDate, setDueDate] = useState(task?.dueDate ?? initialDraft?.dueDate ?? "");
   const [recurrence, setRecurrence] = useState<Recurrence | null>(task?.recurrence ?? initialDraft?.recurrence ?? null);
-  const [menu, setMenu] = useState<"status" | "priority" | "labels" | "more" | "due" | "recurrence" | null>(null);
+  const [menu, setMenu] = useState<"status" | "priority" | "assignee" | "labels" | "more" | "due" | "recurrence" | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -364,23 +364,22 @@ export function TaskEditor({
               onOpenChange={(open) => setMenu(open ? "priority" : null)}
               onChange={setPriority}
             />
-            <label className="property-control property-assignee">
-              <ActorAvatar actor={assignee} className="property-assignee-avatar" />
-              <select
-                aria-label="负责人"
-                value={actorKey(assignee)}
-                onChange={(event) => {
-                  const selected = assigneeOptions.find((actor) => actorKey(actor) === event.target.value);
-                  if (selected) setAssignee(selected);
-                }}
-              >
-                {assigneeOptions.map((actor) => (
-                  <option value={actorKey(actor)} key={actorKey(actor)}>
-                    {actor.id === currentUser.id ? `${actor.name}（我）` : actor.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <TaskPropertyPicker
+              value={actorKey(assignee)}
+              options={assigneeOptions.map((actor) => ({
+                value: actorKey(actor),
+                label: actor.id === currentUser.id ? `${actor.name}（我）` : actor.name,
+                icon: <ActorAvatar actor={actor} className="task-property-assignee-avatar" />,
+              }))}
+              open={menu === "assignee"}
+              triggerClassName="property-control property-assignee"
+              ariaLabel="负责人"
+              onOpenChange={(open) => setMenu(open ? "assignee" : null)}
+              onChange={(value) => {
+                const selected = assigneeOptions.find((actor) => actorKey(actor) === value);
+                if (selected) setAssignee(selected);
+              }}
+            />
             <LabelPicker
               availableLabels={availableLabels}
               selectedLabels={selectedLabels}

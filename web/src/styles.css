@@ -4147,18 +4147,6 @@ kbd {
   pointer-events: none;
 }
 
-.detail-assignee-avatar {
-  width: 16px;
-  height: 16px;
-  border-width: 1px;
-  font-size: 7px;
-  grid-column: 2;
-  grid-row: 1;
-  justify-self: start;
-  margin-left: 9px;
-  pointer-events: none;
-}
-
 .detail-property-icon svg {
   width: 14px;
   height: 14px;
@@ -6142,13 +6130,6 @@ kbd {
   color: var(--text-primary);
 }
 
-.property-assignee-avatar {
-  width: 14px;
-  height: 14px;
-  border-width: 1px;
-  font-size: 7px;
-}
-
 .property-control svg {
   width: 14px;
   height: 14px;
@@ -6487,6 +6468,13 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.task-property-assignee-avatar {
+  width: 16px;
+  height: 16px;
+  border-width: 1px;
+  font-size: 7px;
 }
 
 .composer-popover {
