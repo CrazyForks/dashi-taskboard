@@ -970,11 +970,6 @@ kbd {
   color: var(--text-primary);
 }
 
-.view-tab:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 .view-tab.active {
   border-color: #e1e1e1;
   background: #fff;
