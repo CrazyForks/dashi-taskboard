@@ -1,0 +1,240 @@
+diff --git a/.github/workflows/export-source.yml b/.github/workflows/export-source.yml
+deleted file mode 100644
+index dcf9046..0000000
+--- a/.github/workflows/export-source.yml
++++ /dev/null
+@@ -1,23 +0,0 @@
+-name: Export PR source
+-
+-on:
+-  push:
+-    branches:
+-      - codex/taskboard-current-snapshot-20260806
+-
+-permissions:
+-  contents: read
+-
+-jobs:
+-  export:
+-    runs-on: ubuntu-latest
+-    timeout-minutes: 5
+-    steps:
+-      - uses: actions/checkout@v4
+-      - run: tar --exclude=.git -czf "$RUNNER_TEMP/pr-source.tar.gz" .
+-      - uses: actions/upload-artifact@v4
+-        with:
+-          name: pr-source-${{ github.sha }}
+-          path: ${{ runner.temp }}/pr-source.tar.gz
+-          retention-days: 1
+-          if-no-files-found: error
+diff --git a/cloud/src/index.mjs b/cloud/src/index.mjs
+index 8ade548..bf5dfdc 100644
+--- a/cloud/src/index.mjs
++++ b/cloud/src/index.mjs
+@@ -883,7 +883,9 @@ async function taskActivitiesForTasks(env, taskIds) {
+     if (chunk.length === 0) continue;
+     const placeholders = chunk.map(() => "?").join(", ");
+     batches.push(all(env.DB.prepare(`
+-      SELECT * FROM task_activities
++      SELECT
++        id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, created_at
++      FROM task_activities
+       WHERE task_id IN (${placeholders})
+       ORDER BY task_id, created_at, id
+     `).bind(...chunk)));
+@@ -1405,6 +1407,22 @@ async function updateTask(env, id, input, actor) {
+   const targetProject = Object.hasOwn(input.changes, "projectId")
+     ? await requireProject(env, input.changes.projectId)
+     : null;
++  const projectChanged = Boolean(targetProject && targetProject.id !== currentTask.projectId);
++  if (projectChanged) {
++    const relation = await env.DB.prepare(`
++      SELECT 1
++      FROM task_relations
++      WHERE source_task_id = ? OR target_task_id = ?
++      LIMIT 1
++    `).bind(current.id, current.id).first();
++    if (relation) {
++      throw new ApiError(
++        409,
++        "CROSS_PROJECT_RELATION",
++        "Remove issue relations before moving the issue to another project",
++      );
++    }
++  }
+   const activityValues = { ...input.changes };
+   const dueDate = Object.hasOwn(input.changes, "dueDate")
+     ? input.changes.dueDate
+@@ -1441,15 +1459,15 @@ async function updateTask(env, id, input, actor) {
+       values.push(key === "labels" ? JSON.stringify(value) : value);
+     }
+   }
+-  const projectChanged = targetProject && targetProject.id !== currentTask.projectId;
+   const statusChanged = Object.hasOwn(input.changes, "status")
+     && input.changes.status !== currentTask.status;
+   if (statusChanged) {
++    const placementProjectId = projectChanged ? targetProject.id : currentTask.projectId;
+     const row = await env.DB.prepare(`
+       SELECT MIN(sort_order) AS minimum
+       FROM tasks
+       WHERE project_id = ? AND status = ? AND archived_at IS NULL AND id != ?
+-    `).bind(current.project_id, input.changes.status, current.id).first();
++    `).bind(placementProjectId, input.changes.status, current.id).first();
+     assignments.push("sort_order = ?");
+     values.push(row?.minimum == null ? 1000 : row.minimum - 1000);
+   }
+@@ -1471,10 +1489,14 @@ async function updateTask(env, id, input, actor) {
+   assignments.push("version = version + 1", "updated_at = ?");
+   const timestamp = now();
+   values.push(timestamp, current.id, input.version);
++  if (projectChanged) values.push(current.id, current.id);
++  const relationGuard = projectChanged
++    ? " AND NOT EXISTS (SELECT 1 FROM task_relations WHERE source_task_id = ? OR target_task_id = ?)"
++    : "";
+   const statements = [env.DB.prepare(`
+     UPDATE tasks
+     SET ${assignments.join(", ")}
+-    WHERE id = ? AND version = ?
++    WHERE id = ? AND version = ?${relationGuard}
+   `).bind(...values)];
+   const activityChanges = taskFieldChanges(currentTask, activityValues);
+   if (activityChanges.length > 0) {
+@@ -1506,6 +1528,21 @@ async function updateTask(env, id, input, actor) {
+   }
+   const results = await env.DB.batch(statements);
+   if (!changed(results[0])) {
++    if (projectChanged) {
++      const relation = await env.DB.prepare(`
++        SELECT 1
++        FROM task_relations
++        WHERE source_task_id = ? OR target_task_id = ?
++        LIMIT 1
++      `).bind(current.id, current.id).first();
++      if (relation) {
++        throw new ApiError(
++          409,
++          "CROSS_PROJECT_RELATION",
++          "Remove issue relations before moving the issue to another project",
++        );
++      }
++    }
+     const latest = await requireTaskRow(env, current.id);
+     throw new ApiError(
+       409,
+diff --git a/server/app.mjs b/server/app.mjs
+index 366967a..fcfac3d 100644
+--- a/server/app.mjs
++++ b/server/app.mjs
+@@ -1333,6 +1333,14 @@ export function createTaskboardServer(options = {}) {
+         candidate.type === "worktree" && candidate.branch === context.branch
+       )) ?? null;
+     },
++    assertTaskProjectMoveAllowed: (taskId, targetProjectId) => {
++      if (!database.hasAiChatThreadProjectConflict(taskId, targetProjectId)) return;
++      throw new CloudProxyError(
++        409,
++        "AI_CHAT_PROJECT_MOVE_BLOCKED",
++        "Delete issue-linked AI conversations before moving the issue to another project",
++      );
++    },
+   });
+   async function readCloudJson(pathname) {
+     const upstream = await cloudProxy.forward(new Request(`http://127.0.0.1${pathname}`, {
+diff --git a/server/cloud-proxy.mjs b/server/cloud-proxy.mjs
+index 3de5157..e211095 100644
+--- a/server/cloud-proxy.mjs
++++ b/server/cloud-proxy.mjs
+@@ -46,15 +46,18 @@ function removeGitWorktreePaths(value) {
+   }
+ }
+ 
+-async function prepareRequest(request) {
++async function prepareRequest(request, { assertTaskProjectMoveAllowed } = {}) {
+   const url = new URL(request.url);
+   let projectWorkspace = null;
+   let body = request.body;
+   const isJson = request.headers.get("content-type")?.includes("application/json");
+   const isProjectCreate = request.method === "POST" && url.pathname === "/api/projects";
++  const taskPatchMatch = request.method === "PATCH"
++    ? url.pathname.match(/^\/api\/tasks\/([^/]+)$/)
++    : null;
+   const isTaskMutation = (
+     (request.method === "POST" && url.pathname === "/api/tasks")
+-    || (request.method === "PATCH" && /^\/api\/tasks\/[^/]+$/.test(url.pathname))
++    || Boolean(taskPatchMatch)
+   );
+   const isWorkflowMutation = request.method === "PUT"
+     && /^\/api\/projects\/[^/]+\/workflow-workspace$/.test(url.pathname);
+@@ -69,6 +72,19 @@ async function prepareRequest(request) {
+     if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+       throw new CloudProxyError(400, "INVALID_BODY", "Request body must be a JSON object");
+     }
++    if (
++      taskPatchMatch
++      && typeof payload.projectId === "string"
++      && typeof assertTaskProjectMoveAllowed === "function"
++    ) {
++      let taskId;
++      try {
++        taskId = decodeURIComponent(taskPatchMatch[1]);
++      } catch {
++        throw new CloudProxyError(400, "INVALID_PATH", "Task id contains invalid encoding");
++      }
++      await assertTaskProjectMoveAllowed(taskId, payload.projectId);
++    }
+     if (isProjectCreate && Object.hasOwn(payload, "workspacePath")) {
+       if (typeof payload.workspacePath === "string") {
+         if (!path.isAbsolute(payload.workspacePath)) {
+@@ -185,6 +201,7 @@ export function createCloudProxy({
+   getConfig,
+   fetch: fetchImplementation = globalThis.fetch,
+   resolveDevelopmentContext,
++  assertTaskProjectMoveAllowed,
+ }) {
+   const readConfig = getConfig ?? (() => configStore.read());
+   const setProjectWorkspace = configStore?.setProjectWorkspace?.bind(configStore);
+@@ -225,7 +242,9 @@ export function createCloudProxy({
+       }
+       headers.set("authorization", basicAuthorization(config.actorName, config.sharedKey));
+ 
+-      const prepared = await prepareRequest(request);
++      const prepared = await prepareRequest(request, {
++        assertTaskProjectMoveAllowed,
++      });
+       if (prepared.projectWorkspace && !setProjectWorkspace) {
+         throw new CloudProxyError(
+           500,
+diff --git a/server/database.mjs b/server/database.mjs
+index f1df8c7..77c6b43 100644
+--- a/server/database.mjs
++++ b/server/database.mjs
+@@ -630,18 +630,16 @@ export class TaskboardDatabase {
+     `).get();
+     if (hasTaskThreads) {
+       this.database.exec(`
+-        UPDATE tasks
++        UPDATE tasks AS migrated_task
+         SET thread_id = COALESCE(thread_id, (
+           SELECT task_threads.thread_id
+           FROM task_threads
+-          WHERE task_threads.task_id = tasks.id
++          LEFT JOIN comments
++            ON comments.task_id = task_threads.task_id
++            AND comments.thread_id = task_threads.thread_id
++          WHERE task_threads.task_id = migrated_task.id
+           ORDER BY
+-            CASE WHEN EXISTS (
+-              SELECT 1
+-              FROM comments
+-              WHERE comments.task_id = tasks.id
+-                AND comments.thread_id = task_threads.thread_id
+-            ) THEN 1 ELSE 0 END,
++            CASE WHEN comments.id IS NOT NULL THEN 1 ELSE 0 END,
+             task_threads.created_at DESC,
+             task_threads.thread_id DESC
+           LIMIT 1
+@@ -975,6 +973,15 @@ export class TaskboardDatabase {
+     return row ? this.#aiChatThreadWithCurrentRun(row) : null;
+   }
+ 
++  hasAiChatThreadProjectConflict(issueId, projectId) {
