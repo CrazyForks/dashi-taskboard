@@ -205,6 +205,7 @@ const DEFAULT_USER_ACTOR: ActorIdentity = {
 };
 
 const GLOBAL_PROJECT_ID = "local";
+const RECENT_PROJECT_IDS_KEY = "taskboard.recentProjectIds.v1";
 const PROJECT_VIEW_KEY_PREFIX = "taskboard.project-view.v1.";
 const DEVICE_WORKSPACE_PATHS_KEY = "taskboard.deviceWorkspacePaths.v1";
 const PROJECT_AUTOMATIONS_KEY = "taskboard.projectAutomations.v1";
@@ -234,6 +235,17 @@ function readProjectBoardView(projectId: string): BoardView {
   return view === "dashboard" || view === "list" || view === "gantt" || view === "issues"
     ? view
     : "issues";
+}
+
+function readRecentProjectIds(): string[] {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(RECENT_PROJECT_IDS_KEY) ?? "[]");
+    return Array.isArray(value)
+      ? value.filter((projectId): projectId is string => typeof projectId === "string" && projectId.length > 0)
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 const EVENT_NAMES = [
@@ -548,10 +560,10 @@ export function App() {
     } | null>
   >({});
   const [processingNow, setProcessingNow] = useState(() => Date.now());
+  const [recentProjectIds, setRecentProjectIds] = useState(readRecentProjectIds);
+  const initialProjectId = query.get("project") ?? recentProjectIds[0] ?? GLOBAL_PROJECT_ID;
   const [projects, setProjects] = useState<Project[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState(
-    () => query.get("project") ?? GLOBAL_PROJECT_ID,
-  );
+  const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
   const [hasLoadedTasks, setHasLoadedTasks] = useState(false);
@@ -560,9 +572,7 @@ export function App() {
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [search, setSearch] = useState("");
   const [filters, setFilters] = useState(readTaskFilters);
-  const [boardView, setBoardView] = useState<BoardView>(() => readProjectBoardView(
-    query.get("project") ?? GLOBAL_PROJECT_ID,
-  ));
+  const [boardView, setBoardView] = useState<BoardView>(() => readProjectBoardView(initialProjectId));
   const [dashboardSummaryAnimatedProjectId, setDashboardSummaryAnimatedProjectId] = useState<string | null>(null);
   const [ganttZoom, setGanttZoom] = useState<GanttZoom>("week");
   const [ganttHideCompleted, setGanttHideCompleted] = useState(false);
@@ -627,6 +637,15 @@ export function App() {
       if (normalizedPath) next[projectId] = normalizedPath;
       else delete next[projectId];
       window.localStorage.setItem(DEVICE_WORKSPACE_PATHS_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const rememberProjectOpen = useCallback((projectId: string) => {
+    setRecentProjectIds((current) => {
+      if (current[0] === projectId) return current;
+      const next = [projectId, ...current.filter((candidate) => candidate !== projectId)];
+      window.localStorage.setItem(RECENT_PROJECT_IDS_KEY, JSON.stringify(next));
       return next;
     });
   }, []);
@@ -715,8 +734,12 @@ export function App() {
         persisted: true,
       });
     }
-    return choices;
-  }, [hostContext?.projects, projects]);
+    const recentOrder = new Map(recentProjectIds.map((projectId, index) => [projectId, index]));
+    return choices.sort((left, right) => (
+      (recentOrder.get(left.id) ?? recentProjectIds.length)
+      - (recentOrder.get(right.id) ?? recentProjectIds.length)
+    ));
+  }, [hostContext?.projects, projects, recentProjectIds]);
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
   const issueReadStorageKey = selectedProjectId
     ? `${ISSUE_READ_KEY_PREFIX}:${taskboardMetadata?.mode ?? "local"}:${selectedProjectId}`
@@ -1876,6 +1899,7 @@ export function App() {
     setProjectMenuOpen(false);
     setDetailTaskIdentifier(null);
     setBoardView(readProjectBoardView(projectId));
+    rememberProjectOpen(projectId);
     setSelectedProjectId(projectId);
     setSearch("");
     setFilters(EMPTY_TASK_FILTERS);
