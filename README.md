@@ -52,7 +52,7 @@ App 不修改官方客户端的 `app.asar`。App 自带 Node.js、服务、Web �
 
 ### 自动更新
 
-App 启动后会检查 GitHub Releases，也可在中文状态页点“检查更新”。发布版从以下地址读取 Tauri 的静态更新清单：
+App 启动后会检查 GitHub Releases，也可在中文状态页点“检查更新”。发现新版本后，点“下载并安装”。App 会下载更新包并验证 Updater 签名；验证通过后才停止任务面板服务、替换 App 并自动重启。发布版从以下地址读取 Tauri 的静态更新清单：
 
 ```text
 https://github.com/chuspeeism/dashi-taskboard/releases/latest/download/latest.json

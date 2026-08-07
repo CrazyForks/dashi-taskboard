@@ -6,12 +6,14 @@ const launcherMessage = document.querySelector("#launcher-message");
 const updateMessage = document.querySelector("#update-message");
 const restartButton = document.querySelector("#restart-button");
 const checkButton = document.querySelector("#check-button");
+const installButton = document.querySelector("#install-button");
 
 function render(snapshot) {
   version.textContent = `版本 ${snapshot.version}`;
   statusDot.className = `status-dot ${snapshot.phase}`;
   launcherMessage.textContent = snapshot.message;
   updateMessage.textContent = snapshot.updateMessage;
+  installButton.hidden = !snapshot.updateAvailable;
 }
 
 async function refresh() {
@@ -37,6 +39,9 @@ async function run(button, command) {
 
 restartButton.addEventListener("click", () => run(restartButton, "restart_launcher"));
 checkButton.addEventListener("click", () => run(checkButton, "check_for_updates"));
+installButton.addEventListener("click", () =>
+  run(installButton, "download_and_install_update"),
+);
 
 refresh();
 setInterval(refresh, 1_000);

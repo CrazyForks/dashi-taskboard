@@ -27,6 +27,7 @@ struct LauncherSnapshot {
     phase: String,
     message: String,
     update_message: String,
+    update_available: bool,
     version: String,
     app_path: Option<String>,
     child_pid: Option<u32>,
@@ -57,6 +58,7 @@ impl LauncherState {
                 phase: "starting".into(),
                 message: "正在启动任务面板…".into(),
                 update_message: "启动后将自动检查更新。".into(),
+                update_available: false,
                 version: env!("CARGO_PKG_VERSION").into(),
                 app_path: None,
                 child_pid: None,
@@ -389,6 +391,7 @@ async fn check_updates(
 ) -> Result<LauncherSnapshot, String> {
     update_snapshot(app, state, |snapshot| {
         snapshot.update_message = "正在检查更新…".into();
+        snapshot.update_available = false;
     });
     match app
         .updater()
@@ -398,10 +401,12 @@ async fn check_updates(
         .map_err(|error| error.to_string())?
     {
         Some(update) => Ok(update_snapshot(app, state, |snapshot| {
-            snapshot.update_message = format!("发现新版本 {}。", update.version);
+            snapshot.update_message = format!("发现新版本 {}，可以下载并安装。", update.version);
+            snapshot.update_available = true;
         })),
         None => Ok(update_snapshot(app, state, |snapshot| {
             snapshot.update_message = "当前已是最新版本。".into();
+            snapshot.update_available = false;
         })),
     }
 }
@@ -414,6 +419,93 @@ async fn check_for_updates(
     check_updates(&app, &state).await
 }
 
+#[tauri::command]
+async fn download_and_install_update(
+    app: AppHandle,
+    state: State<'_, Arc<LauncherState>>,
+) -> Result<LauncherSnapshot, String> {
+    update_snapshot(&app, &state, |snapshot| {
+        snapshot.update_message = "正在确认更新版本…".into();
+        snapshot.update_available = false;
+    });
+    let update = match app
+        .updater()
+        .map_err(|error| error.to_string())?
+        .check()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        Some(update) => update,
+        None => {
+            return Ok(update_snapshot(&app, &state, |snapshot| {
+                snapshot.update_message = "当前已是最新版本。".into();
+            }));
+        }
+    };
+
+    let update_version = update.version.clone();
+    update_snapshot(&app, &state, |snapshot| {
+        snapshot.update_message = format!("正在下载版本 {update_version}…");
+    });
+    let progress_app = app.clone();
+    let progress_state = Arc::clone(state.inner());
+    let progress_version = update_version.clone();
+    let finish_app = app.clone();
+    let finish_state = Arc::clone(state.inner());
+    let mut downloaded = 0_u64;
+    let bytes = match update
+        .download(
+            move |chunk_length, content_length| {
+                downloaded = downloaded.saturating_add(chunk_length as u64);
+                update_snapshot(&progress_app, &progress_state, |snapshot| {
+                    snapshot.update_message = match content_length.filter(|total| *total > 0) {
+                        Some(total) => format!(
+                            "正在下载版本 {progress_version}：{}%",
+                            downloaded.saturating_mul(100).saturating_div(total).min(100)
+                        ),
+                        None => format!("正在下载版本 {progress_version}…"),
+                    };
+                });
+            },
+            move || {
+                update_snapshot(&finish_app, &finish_state, |snapshot| {
+                    snapshot.update_message = "下载完成，正在验证更新签名…".into();
+                });
+            },
+        )
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            append_log(&state, &format!("Update download failed: {error}"));
+            update_snapshot(&app, &state, |snapshot| {
+                snapshot.update_message = format!("更新下载或签名验证失败：{error}");
+                snapshot.update_available = true;
+            });
+            return Err(error.to_string());
+        }
+    };
+
+    update_snapshot(&app, &state, |snapshot| {
+        snapshot.update_message = "更新签名验证通过，正在安装…".into();
+    });
+    stop_managed_child(&app, &state);
+    if let Err(error) = update.install(&bytes) {
+        append_log(&state, &format!("Update installation failed: {error}"));
+        update_snapshot(&app, &state, |snapshot| {
+            snapshot.update_message = format!("更新安装失败：{error}");
+            snapshot.update_available = true;
+        });
+        return Err(error.to_string());
+    }
+
+    append_log(&state, &format!("Installed update {update_version}; restarting"));
+    update_snapshot(&app, &state, |snapshot| {
+        snapshot.update_message = format!("版本 {update_version} 已安装，正在重启…");
+    });
+    app.restart()
+}
+
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -421,7 +513,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             launcher_status,
             restart_launcher,
-            check_for_updates
+            check_for_updates,
+            download_and_install_update
         ])
         .setup(|app| {
             let home_directory = app.path().home_dir()?;
