@@ -1192,6 +1192,7 @@
     if (!browserPanel) return;
     const webview = browserPanel.querySelector("webview");
     suspendedNativeBrowserPanel = {
+      conversationId: webview?.getAttribute("data-browser-sidebar-conversation-id") || null,
       browserTabId: webview?.getAttribute("data-browser-sidebar-browser-tab-id") || null,
     };
     window.dispatchEvent(new MessageEvent("message", {
@@ -1214,6 +1215,7 @@
       source: "manual",
       initiator: "taskboard_close",
     };
+    if (browserPanel.conversationId) data.conversationId = browserPanel.conversationId;
     if (browserPanel.browserTabId) data.browserTabId = browserPanel.browserTabId;
     window.dispatchEvent(new MessageEvent("message", { data }));
   }
