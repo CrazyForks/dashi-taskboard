@@ -128,7 +128,7 @@ export function LabelPicker({
                   key={label}
                   onClick={() => toggleLabel(label)}
                 >
-                  {presentation.tone && <i style={{ background: presentation.color }} />}
+                  <i style={{ background: presentation.tone ? presentation.color : "transparent" }} />
                   <span>{presentation.name}</span>
                   {selectedLabels.includes(label) && <b><LinearIcon name="check" /></b>}
                 </button>
@@ -143,9 +143,11 @@ export function LabelPicker({
                   setSearch("");
                 }}
               >
-                {labelPresentation(normalizedSearch).tone && (
-                  <i style={{ background: labelPresentation(normalizedSearch).color }} />
-                )}
+                <i style={{
+                  background: labelPresentation(normalizedSearch).tone
+                    ? labelPresentation(normalizedSearch).color
+                    : "transparent",
+                }} />
                 <span>创建 “{normalizedSearch}”</span>
               </button>
             )}
