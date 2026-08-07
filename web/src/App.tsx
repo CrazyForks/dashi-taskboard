@@ -406,7 +406,6 @@ function taskToDraft(task: Task): TaskDraft {
     status: task.status,
     priority: task.priority,
     labels: task.labels,
-    workflowId: task.workflowId,
     developmentContext: task.developmentContext,
     startDate: task.startDate,
     dueDate: task.dueDate,
@@ -2335,7 +2334,6 @@ export function App() {
             tasks={tasks}
             currentUser={currentUser}
             availableLabels={availableLabels}
-            workflows={workflowOptions}
             developmentScan={developmentScan}
             developmentScanLoading={developmentScanLoading}
             commentsRevision={commentsRevision}
@@ -2490,7 +2488,6 @@ export function App() {
           task={editor.task}
           initialStatus={editor.status}
           labels={availableLabels}
-          workflows={workflowOptions}
           currentUser={currentUser}
           developmentScan={developmentScan}
           developmentScanLoading={developmentScanLoading}
