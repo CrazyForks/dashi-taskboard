@@ -60,6 +60,7 @@ import {
   IssueSubIssues,
   type RelationMutationResult,
 } from "./IssueRelations";
+import { TaskPropertyPicker } from "./TaskPropertyPicker";
 import { buildIssueUrl } from "../issueRoute";
 import copyIdIcon from "../assets/figma-taskboard/copy-id.svg";
 import copyLinkIcon from "../assets/figma-taskboard/copy-link.svg";
@@ -280,7 +281,7 @@ export function TaskDetail({
     () => createInlineMediaSegments(task.description),
   );
   const [editingDescription, setEditingDescription] = useState(false);
-  const [labelMenuOpen, setLabelMenuOpen] = useState(false);
+  const [propertyMenu, setPropertyMenu] = useState<"status" | "priority" | "labels" | null>(null);
   const [savingProperty, setSavingProperty] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachmentsLoading, setAttachmentsLoading] = useState(true);
@@ -1162,32 +1163,44 @@ export function TaskDetail({
               </button>
             </div>
             <h2>属性</h2>
-            <label className="detail-property-row">
-              <span className={`detail-property-icon status-icon-${STATUS_DETAILS[currentTask.status].tone}`}><StatusIcon status={currentTask.status} /></span>
+            <div className="detail-property-row">
               <span className="detail-property-label">状态</span>
-              <select
+              <TaskPropertyPicker
                 value={currentTask.status}
+                options={TASK_STATUSES.map((status) => ({
+                  value: status,
+                  label: STATUS_DETAILS[status].label,
+                  icon: <StatusIcon status={status} />,
+                  className: `status-icon-${STATUS_DETAILS[status].tone}`,
+                }))}
+                open={propertyMenu === "status"}
                 disabled={savingProperty === "status"}
-                onChange={(event) => void saveTask({ status: event.target.value as TaskStatus }, "status")}
-              >
-                {TASK_STATUSES.map((status) => (
-                  <option value={status} key={status}>{STATUS_DETAILS[status].label}</option>
-                ))}
-              </select>
-            </label>
-            <label className="detail-property-row">
-              <span className="detail-property-icon"><LinearPriorityIcon priority={currentTask.priority} /></span>
+                className="detail-property-picker"
+                triggerClassName="detail-property-trigger"
+                ariaLabel="状态"
+                onOpenChange={(open) => setPropertyMenu(open ? "status" : null)}
+                onChange={(status) => void saveTask({ status }, "status")}
+              />
+            </div>
+            <div className="detail-property-row">
               <span className="detail-property-label">优先级</span>
-              <select
+              <TaskPropertyPicker
                 value={currentTask.priority}
+                options={(Object.keys(PRIORITY_DETAILS) as TaskPriority[]).map((priority) => ({
+                  value: priority,
+                  label: PRIORITY_DETAILS[priority].label,
+                  icon: <LinearPriorityIcon priority={priority} />,
+                  className: `priority-${priority}`,
+                }))}
+                open={propertyMenu === "priority"}
                 disabled={savingProperty === "priority"}
-                onChange={(event) => void saveTask({ priority: event.target.value as TaskPriority }, "priority")}
-              >
-                {(Object.keys(PRIORITY_DETAILS) as TaskPriority[]).map((priority) => (
-                  <option value={priority} key={priority}>{PRIORITY_DETAILS[priority].label}</option>
-                ))}
-              </select>
-            </label>
+                className="detail-property-picker"
+                triggerClassName="detail-property-trigger"
+                ariaLabel="优先级"
+                onOpenChange={(open) => setPropertyMenu(open ? "priority" : null)}
+                onChange={(priority) => void saveTask({ priority }, "priority")}
+              />
+            </div>
             <label className="detail-property-row assignee-property">
               <ActorAvatar actor={currentTask.assignee} className="detail-assignee-avatar" />
               <span className="detail-property-label">负责人</span>
@@ -1218,13 +1231,13 @@ export function TaskDetail({
               <LabelPicker
                 availableLabels={availableLabels}
                 selectedLabels={currentTask.labels}
-                open={labelMenuOpen}
+                open={propertyMenu === "labels"}
                 disabled={savingProperty === "labels"}
                 className="detail-label-picker"
                 triggerClassName="detail-label-trigger"
                 showSelectedAsChips
                 placeholder="添加标签…"
-                onOpenChange={setLabelMenuOpen}
+                onOpenChange={(open) => setPropertyMenu(open ? "labels" : null)}
                 onChange={(nextLabels) => void saveTask({ labels: nextLabels }, "labels")}
               />
             </div>

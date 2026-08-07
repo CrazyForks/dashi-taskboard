@@ -19,9 +19,9 @@ import {
   assigneeTargetForActor,
 } from "../actors";
 import { ActorAvatar } from "./ActorAvatar";
-import { STATUS_DETAILS } from "./BoardColumn";
+import { STATUS_DETAILS, StatusIcon } from "./BoardColumn";
 import { LabelPicker } from "./LabelPicker";
-import { LinearIcon, LinearPriorityIcon, LinearStatusIcon } from "./LinearIcon";
+import { LinearIcon, LinearPriorityIcon } from "./LinearIcon";
 import {
   fileKey,
   MAX_ATTACHMENT_SIZE,
@@ -36,6 +36,7 @@ import {
   type InlineMediaSegment,
   type PendingInlineImage,
 } from "./InlineMediaComposer";
+import { TaskPropertyPicker } from "./TaskPropertyPicker";
 
 const PRIORITY_LABELS: Record<TaskPriority, string> = {
   none: "无优先级",
@@ -144,7 +145,7 @@ export function TaskEditor({
   const [startDate] = useState(task?.startDate ?? initialDraft?.startDate ?? "");
   const [dueDate, setDueDate] = useState(task?.dueDate ?? initialDraft?.dueDate ?? "");
   const [recurrence, setRecurrence] = useState<Recurrence | null>(task?.recurrence ?? initialDraft?.recurrence ?? null);
-  const [menu, setMenu] = useState<"labels" | "more" | "due" | "recurrence" | null>(null);
+  const [menu, setMenu] = useState<"status" | "priority" | "labels" | "more" | "due" | "recurrence" | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -335,20 +336,34 @@ export function TaskEditor({
 
         <div className="task-form-dock">
           <div className="property-row">
-            <label className="property-control property-status">
-              <LinearStatusIcon status={status} className={`status-icon-${STATUS_DETAILS[status].tone}`} />
-              <span className="sr-only">状态</span>
-              <select value={status} onChange={(event) => setStatus(event.target.value as TaskStatus)}>
-                {TASK_STATUSES.map((value) => <option value={value} key={value}>{STATUS_DETAILS[value].label}</option>)}
-              </select>
-            </label>
-            <label className={`property-control property-priority priority-${priority}`}>
-              <LinearPriorityIcon priority={priority} />
-              <span className="sr-only">优先级</span>
-              <select value={priority} onChange={(event) => setPriority(event.target.value as TaskPriority)}>
-                {TASK_PRIORITIES.map((value) => <option value={value} key={value}>{PRIORITY_LABELS[value]}</option>)}
-              </select>
-            </label>
+            <TaskPropertyPicker
+              value={status}
+              options={TASK_STATUSES.map((value) => ({
+                value,
+                label: STATUS_DETAILS[value].label,
+                icon: <StatusIcon status={value} />,
+                className: `status-icon-${STATUS_DETAILS[value].tone}`,
+              }))}
+              open={menu === "status"}
+              triggerClassName="property-control property-status"
+              ariaLabel="状态"
+              onOpenChange={(open) => setMenu(open ? "status" : null)}
+              onChange={setStatus}
+            />
+            <TaskPropertyPicker
+              value={priority}
+              options={TASK_PRIORITIES.map((value) => ({
+                value,
+                label: PRIORITY_LABELS[value],
+                icon: <LinearPriorityIcon priority={value} />,
+                className: `priority-${value}`,
+              }))}
+              open={menu === "priority"}
+              triggerClassName={`property-control property-priority priority-${priority}`}
+              ariaLabel="优先级"
+              onOpenChange={(open) => setMenu(open ? "priority" : null)}
+              onChange={setPriority}
+            />
             <label className="property-control property-assignee">
               <ActorAvatar actor={assignee} className="property-assignee-avatar" />
               <select
