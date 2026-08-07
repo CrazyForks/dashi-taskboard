@@ -2206,6 +2206,7 @@ export function App() {
             )}
             onOpenThread={openThread}
             onOpenInThread={openTaskInThread}
+            onCopy={(text, message) => void copyText(text, message)}
             openingThread={openingThreadTaskId === detailTask.id}
             onError={setActionError}
           />
