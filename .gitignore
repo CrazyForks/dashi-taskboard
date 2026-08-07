@@ -8,3 +8,7 @@ cloud-migration-exports/
 .playwright-cli/
 *.log
 .DS_Store
+src-tauri/binaries/
+src-tauri/gen/
+src-tauri/resources/
+src-tauri/target/
