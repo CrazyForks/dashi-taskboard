@@ -54,16 +54,13 @@ jobs:
 
           echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
 
-      - name: Set up Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust 1.88
+        uses: dtolnay/rust-toolchain@1.88.0
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Install dependencies
         run: npm ci
-
-      - name: Build web interface
-        run: npm run build:web
 
       - name: Prepare universal app resources
         run: npm run app:prepare -- --target universal-apple-darwin

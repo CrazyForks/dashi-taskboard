@@ -9,7 +9,7 @@ Codex Taskboard 是一个本地优先的任务面板。它可在浏览器中运�
 1. 用户打开 `Codex Taskboard.app`。
 2. App 从自身资源启动 Node.js 和本地任务面板服务。服务只监听 `127.0.0.1:47823`。
 3. App 启动官方 Codex/ChatGPT 客户端的独立窗口，并通过 CDP 注入任务面板入口。
-4. 用户在 Codex 侧栏打开任务面板。App 状态页用中文显示资源准备、服务启动、客户端启动、面板注入和更新结果。
+4. 用户在 Codex 侧栏打开任务面板。App 状态页用中文显示服务启动、等待客户端、等待面板注入和更新结果。
 5. 用户修改任务、评论或附件。服务把数据写入 `~/Library/Application Support/Codex Taskboard`，并把变化推送到所有已打开的面板。
 
 App 不修改官方客户端的 `app.asar`。App 自带 Node.js、服务、Web 界面、注入器、Skill 和 `taskctl`，所以安装机不需要系统 Node.js 或本仓库。
@@ -67,7 +67,7 @@ Draft Release 不会成为 GitHub 的 latest Release。只有完成验证并手�
 ### 要求
 
 - Node.js 22.5 或更高版本
-- Rust stable
+- Rust 1.88
 - Xcode 和 Xcode Command Line Tools
 
 安装依赖并启动浏览器开发环境：
@@ -79,22 +79,18 @@ npm run dev
 
 Vite 界面位于 <http://127.0.0.1:5173>，并把 API 请求转发到本地服务。
 
-准备 Tauri 开发构建：
+准备并启动 Tauri 开发版：
 
 ```bash
 npm ci
-npm run build:web
-npm run app:prepare -- --target universal-apple-darwin
-npm run tauri dev
+npm run app:dev
 ```
 
 构建与发布工作流相同的 universal App 和 DMG：
 
 ```bash
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-npm run build:web
-npm run app:prepare -- --target universal-apple-darwin
-npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+npm run app:build
 ```
 
 签名、公证和 Updater 构建需要下文列出的环境变量。不要把证书、P8、密码或 Updater 私钥写入仓库、`.env` 或命令历史。
@@ -110,7 +106,7 @@ npm start
 
 ## 发布 macOS App
 
-`.github/workflows/release-macos.yml` 只接受 `app-v*` 标签推送或手动触发。它使用 Node.js 22、Rust stable 和两个 macOS Rust target 构建 universal 包，然后创建 GitHub Draft Release。它不会自动发布 Draft。
+`.github/workflows/release-macos.yml` 只接受 `app-v*` 标签推送或手动触发。它使用 Node.js 22、Rust 1.88 和两个 macOS Rust target 构建 universal 包，然后创建 GitHub Draft Release。它不会自动发布 Draft。
 
 ### GitHub Secrets
 
@@ -126,7 +122,7 @@ npm start
 | `APPLE_API_KEY` | App Store Connect API Key ID |
 | `APPLE_API_PRIVATE_KEY` | App Store Connect API `.p8` 文件的完整内容 |
 | `TAURI_SIGNING_PRIVATE_KEY` | Tauri Updater 私钥的完整内容 |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Tauri Updater 私钥密码 |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Tauri Updater 私钥密码；只有私钥加密时需要，未加密可不配置 |
 
 `APPLE_API_KEY_PATH` 不是仓库 Secret。工作流把 `APPLE_API_PRIVATE_KEY` 写入 runner 的临时文件，再把该文件路径设为 `APPLE_API_KEY_PATH`。构建结束后，工作流删除 P8、P12 和临时 keychain。
 
