@@ -189,6 +189,8 @@ test("complete App automation payloads cross the injected forwarder into the cur
     workspacePath: "/tmp/local-project",
     skillPath: "/tmp/manage-taskboard/SKILL.md",
     automationId: "automation-1",
+    enabledByUser: true,
+    quotaAware: true,
     intervalMinutes: 10,
     model: "gpt-5.6-sol",
     reasoningEffort: "ultra",
@@ -287,7 +289,8 @@ test("host context captures all Codex projects even when the sidebar section is 
   assert.match(source, /requestHostEnsure\(taskboardUrl\),\s*captureHostContext\(\),/);
   assert.match(source, /let lastNativeThreadId = ""/);
   assert.match(source, /clickedThreadId.*lastNativeThreadId/s);
-  assert.match(source, /currentThreadId \|\| lastNativeThreadId \|\| normalizeThreadId\(threadIdFromLocation\(\)\)/);
+  assert.match(source, /const currentThreadId = activeThreadId \|\| runningThreadId \|\| lastNativeThreadId/);
+  assert.match(source, /const threadId = currentThreadId \|\| lastNativeThreadId \|\| normalizeThreadId\(threadIdFromLocation\(\)\)/);
   assert.match(source, /replace\(\/\^\(\?:local\|cloud\):\/i, ""\)/);
   assert.match(source, /function findTasksSection\(\)/);
 });

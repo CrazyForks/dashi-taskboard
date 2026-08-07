@@ -720,7 +720,7 @@ fi
 while IFS= read -r line; do
   case "$line" in
     *'"id":1'*) printf '%s\\n' '{"id":1,"result":{"platformFamily":"unix"}}' ;;
-    *'"id":2'*) printf '%s\\n' '{"id":2,"result":{"data":[{"cwd":"workspace","skills":[{"name":"user-skill","enabled":true,"scope":"user","interface":null},{"name":"repo-skill","enabled":true,"scope":"repo","interface":{"displayName":"Repository Skill"}},{"name":"user-skill","enabled":true,"scope":"system","interface":{"displayName":"Duplicate"}},{"name":"disabled-skill","enabled":false,"scope":"user","interface":null}],"errors":[]}]}}' ;;
+    *'"id":2'*) printf '%s\\n' '{"id":2,"result":{"data":[{"cwd":"workspace","skills":[{"name":"user-skill","description":"User skill","path":"/user/skills/user-skill/SKILL.md","enabled":true,"scope":"user","interface":null},{"name":"repo-skill","description":"Repository skill","path":"/workspace/.agents/skills/repo-skill/SKILL.md","enabled":true,"scope":"repo","interface":{"displayName":"Repository Skill"}},{"name":"user-skill","enabled":true,"scope":"system","interface":{"displayName":"Duplicate"}},{"name":"disabled-skill","enabled":false,"scope":"user","interface":null}],"errors":[]}]}}' ;;
   esac
 done
 `);
@@ -738,15 +738,15 @@ done
       {
         id: "repo-skill",
         label: "Repository Skill",
-        description: "",
-        path: "",
+        description: "Repository skill",
+        path: "/workspace/.agents/skills/repo-skill/SKILL.md",
         scope: "repo",
       },
       {
         id: "user-skill",
         label: "user-skill",
-        description: "",
-        path: "",
+        description: "User skill",
+        path: "/user/skills/user-skill/SKILL.md",
         scope: "user",
       },
     ],
