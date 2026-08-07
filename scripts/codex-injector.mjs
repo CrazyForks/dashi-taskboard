@@ -138,7 +138,9 @@ function createTaskboardSupervisor({ detached }) {
   let stopping = false;
 
   async function ensure({ force = false } = {}) {
-    if (await isReachable(taskboardHealthUrl)) {
+    const reachable = await isReachable(taskboardHealthUrl);
+    if (stopping) throw new Error("Taskboard supervisor is stopping");
+    if (reachable) {
       return { status: "ok", restarted: false };
     }
     if (ensureInFlight) return ensureInFlight;
@@ -154,6 +156,7 @@ function createTaskboardSupervisor({ detached }) {
         } catch (_) {}
       }
 
+      if (stopping) throw new Error("Taskboard supervisor is stopping");
       const started = startTaskboard({ detached });
       child = started;
       if (detached) started.unref();
