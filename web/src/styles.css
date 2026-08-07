@@ -971,7 +971,7 @@ kbd {
 }
 
 .view-tab:focus-visible {
-  box-shadow: 0 0 0 2px var(--accent-soft);
+  outline: 0;
 }
 
 .view-tab.active {
