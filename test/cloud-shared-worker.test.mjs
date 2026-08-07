@@ -304,18 +304,18 @@ test("PATCH rejects moving an issue that still has relations", async () => {
 });
 
 test("PATCH project and status updates use the target status ordering", async () => {
-  await createProject("move-sort-cloud-source");
-  await createProject("move-sort-cloud-target");
-  await createTask("move-sort-cloud-target", "Cloud target first", alice, {
+  await createProject("move-sort-source-cloud");
+  await createProject("move-sort-target-cloud");
+  await createTask("move-sort-target-cloud", "Cloud target first", alice, {
     status: "done",
     sortOrder: 5000,
   });
-  await createTask("move-sort-cloud-target", "Cloud target second", alice, {
+  await createTask("move-sort-target-cloud", "Cloud target second", alice, {
     status: "done",
     sortOrder: 7000,
   });
   const sourceTask = await createTask(
-    "move-sort-cloud-source",
+    "move-sort-source-cloud",
     "Cloud move and complete",
     alice,
     { status: "todo", sortOrder: 9000 },
@@ -326,13 +326,13 @@ test("PATCH project and status updates use the target status ordering", async ()
     actorName: alice,
     json: {
       version: sourceTask.body.task.version,
-      projectId: "move-sort-cloud-target",
+      projectId: "move-sort-target-cloud",
       status: "done",
     },
   });
 
   assert.equal(moved.response.status, 200, JSON.stringify(moved.body));
-  assert.equal(moved.body.task.projectId, "move-sort-cloud-target");
+  assert.equal(moved.body.task.projectId, "move-sort-target-cloud");
   assert.equal(moved.body.task.status, "done");
   assert.equal(moved.body.task.sortOrder, 4000);
 });
