@@ -276,7 +276,7 @@ function ConversationLink({
       title={`查看对话 ${threadId}`}
       onClick={() => onOpen(threadId)}
     >
-      <LinearIcon name="conversation" />
+      <TaskboardIcon name="conversation" />
       <strong>查看对话</strong>
       <span className="conversation-divider" aria-hidden="true" />
       <span className="conversation-thread-id">{threadId}</span>
