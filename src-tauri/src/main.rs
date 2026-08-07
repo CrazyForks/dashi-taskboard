@@ -136,19 +136,13 @@ fn process_matches_record(record: &LauncherPidRecord) -> bool {
         && command.contains(&*record.injector_path.to_string_lossy())
 }
 
-fn stop_legacy_launcher(state: &LauncherState, contents_directory: &Path, injector_path: &Path) {
+fn stop_stale_launchers(state: &LauncherState) {
     let process_list = StdCommand::new("/bin/ps")
         .args(["-axo", "pid=,command="])
         .output();
     let Ok(process_list) = process_list else {
         return;
     };
-    let old_node_paths = ["arm64", "x64"].map(|architecture| {
-        contents_directory
-            .join("Resources/node")
-            .join(format!("darwin-{architecture}/bin/node"))
-    });
-    let injector = injector_path.to_string_lossy();
 
     for line in String::from_utf8_lossy(&process_list.stdout).lines() {
         let Some((pid, command)) = line.trim().split_once(char::is_whitespace) else {
@@ -157,35 +151,26 @@ fn stop_legacy_launcher(state: &LauncherState, contents_directory: &Path, inject
         let Ok(pid) = pid.parse::<u32>() else {
             continue;
         };
-        let old_node_matches = old_node_paths
-            .iter()
-            .any(|node_path| command.contains(&*node_path.to_string_lossy()));
-        if old_node_matches
-            && command.contains(&*injector)
+        if command
+            .contains("/Codex Taskboard.app/Contents/Resources/app/scripts/codex-injector.mjs")
             && command.contains(" --launch ")
             && command.contains(" --watch ")
             && command.contains(" --open ")
             && command.contains(" --port 9231")
         {
-            append_log(
-                state,
-                &format!("Stopping legacy 0.1.0 launcher child {pid}"),
-            );
+            append_log(state, &format!("Stopping stale launcher child {pid}"));
             send_sigterm(pid);
             let _ = wait_for_process_exit(pid, STOP_TIMEOUT);
         }
     }
 }
 
-fn stop_stale_child(state: &LauncherState, node_path: &Path, injector_path: &Path) {
+fn stop_recorded_child(state: &LauncherState) {
     let record = fs::read_to_string(&state.pid_record_path)
         .ok()
         .and_then(|content| serde_json::from_str::<LauncherPidRecord>(&content).ok());
     if let Some(record) = record {
-        if record.node_path == node_path
-            && record.injector_path == injector_path
-            && process_matches_record(&record)
-        {
+        if process_matches_record(&record) {
             send_sigterm(record.pid);
             let _ = wait_for_process_exit(record.pid, STOP_TIMEOUT);
         }
@@ -258,13 +243,8 @@ fn start_launcher(app: &AppHandle, state: &Arc<LauncherState>) -> Result<Launche
         .parent()
         .ok_or_else(|| "无法定位 App 可执行文件目录".to_string())?
         .join("node");
-    let contents_directory = node_path
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| "无法定位 App Contents 目录".to_string())?;
-
-    stop_legacy_launcher(state, contents_directory, &injector_path);
-    stop_stale_child(state, &node_path, &injector_path);
+    stop_stale_launchers(state);
+    stop_recorded_child(state);
     state.intentional_stop.store(false, Ordering::SeqCst);
     update_snapshot(app, state, |snapshot| {
         snapshot.phase = "starting".into();
@@ -461,7 +441,10 @@ async fn download_and_install_update(
                     snapshot.update_message = match content_length.filter(|total| *total > 0) {
                         Some(total) => format!(
                             "正在下载版本 {progress_version}：{}%",
-                            downloaded.saturating_mul(100).saturating_div(total).min(100)
+                            downloaded
+                                .saturating_mul(100)
+                                .saturating_div(total)
+                                .min(100)
                         ),
                         None => format!("正在下载版本 {progress_version}…"),
                     };
@@ -499,7 +482,10 @@ async fn download_and_install_update(
         return Err(error.to_string());
     }
 
-    append_log(&state, &format!("Installed update {update_version}; restarting"));
+    append_log(
+        &state,
+        &format!("Installed update {update_version}; restarting"),
+    );
     update_snapshot(&app, &state, |snapshot| {
         snapshot.update_message = format!("版本 {update_version} 已安装，正在重启…");
     });

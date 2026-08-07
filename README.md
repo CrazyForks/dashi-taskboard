@@ -117,7 +117,7 @@ npm start
 | `APPLE_CERTIFICATE` | Developer ID Application `.p12` 的单行 Base64 内容 |
 | `APPLE_CERTIFICATE_PASSWORD` | 导出 `.p12` 时设置的密码 |
 | `KEYCHAIN_PASSWORD` | GitHub runner 临时 keychain 的密码 |
-| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: …` 的完整签名身份 |
+| `APPLE_SIGNING_IDENTITY` | `security find-identity -v -p codesigning` 输出的 Developer ID 证书 SHA；使用 SHA 可避免同名证书歧义 |
 | `APPLE_API_ISSUER` | App Store Connect API Issuer ID |
 | `APPLE_API_KEY` | App Store Connect API Key ID |
 | `APPLE_API_PRIVATE_KEY` | App Store Connect API `.p8` 文件的完整内容 |
