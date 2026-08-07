@@ -2029,6 +2029,7 @@ export function createTaskboardServer(options = {}) {
             relationType,
             relatedTaskId,
             threadId,
+            actorFromRequest(request),
           );
           events.emit("task.relation.updated", result);
           return sendJson(response, 200, result);
@@ -2041,11 +2042,32 @@ export function createTaskboardServer(options = {}) {
             relationType,
             relatedTaskId,
             threadId,
+            actorFromRequest(request),
           );
           events.emit("task.relation.updated", result);
           return sendJson(response, 200, result);
         }
         return methodNotAllowed(response, ["POST", "DELETE"]);
+      }
+
+      const taskActivitiesRoute = pathname.match(/^\/api\/tasks\/([^/]+)\/activities$/);
+      if (taskActivitiesRoute) {
+        let taskId;
+        try {
+          taskId = decodeURIComponent(taskActivitiesRoute[1]);
+        } catch {
+          throw new ApiError(400, "INVALID_PATH", "Task id contains invalid encoding");
+        }
+        if (taskId.length === 0 || taskId.length > 128) {
+          throw new ApiError(400, "INVALID_PATH", "Task id is invalid");
+        }
+        if ([...url.searchParams.keys()].length > 0) {
+          throw new ApiError(400, "UNKNOWN_QUERY_PARAMETER", "Activity routes do not accept query parameters");
+        }
+        if (request.method === "GET") {
+          return sendJson(response, 200, { activities: database.listTaskActivities(taskId) });
+        }
+        return methodNotAllowed(response, ["GET"]);
       }
 
       const taskCommentsRoute = pathname.match(/^\/api\/tasks\/([^/]+)\/comments$/);
@@ -2278,29 +2300,37 @@ export function createTaskboardServer(options = {}) {
           return sendJson(response, 200, { task });
         }
         if (!action && request.method === "PATCH") {
+          const actor = actorFromRequest(request);
           const { version, changes, threadId, assigneeTarget } = parseTaskPatch(await readJson(request));
           if (assigneeTarget !== undefined) {
-            changes.assignee = resolveAssignee(assigneeTarget, actorFromRequest(request));
+            changes.assignee = resolveAssignee(assigneeTarget, actor);
           }
-          const task = database.updateTask(id, version, changes, threadId);
+          const task = database.updateTask(id, version, changes, threadId, actor);
           events.emit("task.updated", { task });
           return sendJson(response, 200, { task });
         }
         if (action === "move" && request.method === "POST") {
           const move = parseMove(await readJson(request));
-          const task = database.moveTask(id, move.version, move.status, move.sortOrder, move.threadId);
+          const task = database.moveTask(
+            id,
+            move.version,
+            move.status,
+            move.sortOrder,
+            move.threadId,
+            actorFromRequest(request),
+          );
           events.emit("task.moved", { task });
           return sendJson(response, 200, { task });
         }
         if (action === "archive" && request.method === "POST") {
           const { version, threadId } = parseArchive(await readJson(request));
-          const task = database.archiveTask(id, version, threadId);
+          const task = database.archiveTask(id, version, threadId, actorFromRequest(request));
           events.emit("task.archived", { task });
           return sendJson(response, 200, { task });
         }
         if (action === "restore" && request.method === "POST") {
           const { version, threadId } = parseArchive(await readJson(request));
-          const task = database.restoreTask(id, version, threadId);
+          const task = database.restoreTask(id, version, threadId, actorFromRequest(request));
           events.emit("task.restored", { task });
           return sendJson(response, 200, { task });
         }

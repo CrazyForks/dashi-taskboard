@@ -27,8 +27,11 @@ function commentConversationTitle(body) {
   return compact.length > 80 ? `${compact.slice(0, 77)}…` : compact;
 }
 
-function attachTaskActivity(task, comments, previewImage = null) {
+function attachTaskActivity(task, comments, activities, previewImage = null) {
   const orderedComments = [...comments].sort((left, right) => (
+    left.id.localeCompare(right.id)
+  ));
+  const orderedActivities = [...activities].sort((left, right) => (
     left.id.localeCompare(right.id)
   ));
   const participants = [];
@@ -52,6 +55,14 @@ function attachTaskActivity(task, comments, previewImage = null) {
       id: comment.author_id,
       name: comment.author_name,
       avatarUrl: comment.author_avatar_url,
+    });
+  }
+  for (const activity of orderedActivities) {
+    addParticipant({
+      type: activity.actor_type,
+      id: activity.actor_id,
+      name: activity.actor_name,
+      avatarUrl: activity.actor_avatar_url,
     });
   }
   const conversationRefs = [];
@@ -82,12 +93,46 @@ function attachTaskActivity(task, comments, previewImage = null) {
     version: 1,
     task: [task.id, task.version, task.updatedAt],
     comments: orderedComments.map((comment) => [comment.id, comment.version, comment.updated_at]),
+    changes: orderedActivities.map((activity) => [activity.id, activity.created_at]),
   });
-  task.activityUpdatedAt = orderedComments.reduce(
-    (latest, comment) => comment.updated_at > latest ? comment.updated_at : latest,
+  task.activityUpdatedAt = [...orderedComments, ...orderedActivities].reduce(
+    (latest, activity) => {
+      const updatedAt = activity.updated_at ?? activity.created_at;
+      return updatedAt > latest ? updatedAt : latest;
+    },
     task.updatedAt,
   );
   return task;
+}
+
+function taskActivityFromRow(row) {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    actorType: row.actor_type,
+    actorId: row.actor_id,
+    actorName: row.actor_name,
+    actorAvatarUrl: row.actor_avatar_url,
+    changes: JSON.parse(row.changes),
+    createdAt: row.created_at,
+  };
+}
+
+function taskFieldChanges(task, changes) {
+  return Object.entries(changes).flatMap(([field, after]) => {
+    const before = task[field];
+    return JSON.stringify(before) === JSON.stringify(after)
+      ? []
+      : [{ field, before, after }];
+  });
+}
+
+function relationActivityValue(type, task) {
+  return {
+    type,
+    identifier: task.identifier,
+    title: task.title,
+  };
 }
 
 function parseAiChatTodoProgress(row) {
@@ -355,6 +400,20 @@ export class TaskboardDatabase {
 
       CREATE INDEX IF NOT EXISTS comments_task_created
         ON comments(task_id, created_at, id);
+
+      CREATE TABLE IF NOT EXISTS task_activities (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'agent')),
+        actor_id TEXT NOT NULL,
+        actor_name TEXT NOT NULL,
+        actor_avatar_url TEXT,
+        changes TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_activities_task_created
+        ON task_activities(task_id, created_at, id);
 
       CREATE TABLE IF NOT EXISTS attachments (
         id TEXT PRIMARY KEY,
@@ -1152,10 +1211,12 @@ export class TaskboardDatabase {
     `;
     const rows = this.database.prepare(sql).all(...values);
     const commentsByTask = this.#commentsForTaskActivity(rows.map((row) => row.id));
+    const activitiesByTask = this.#activitiesForTasks(rows.map((row) => row.id));
     const previewImagesByTask = this.#taskPreviewImages(rows.map((row) => row.id));
     return rows.map((row) => attachTaskActivity(
       this.#taskWithRelations(row),
       commentsByTask.get(row.id) ?? [],
+      activitiesByTask.get(row.id) ?? [],
       previewImagesByTask.get(row.id) ?? null,
     ));
   }
@@ -1165,8 +1226,9 @@ export class TaskboardDatabase {
     if (!row) return null;
     const task = this.#taskWithRelations(row);
     const comments = this.#commentsForTaskActivity([task.id]).get(task.id) ?? [];
+    const activities = this.#activitiesForTasks([task.id]).get(task.id) ?? [];
     const previewImage = this.#taskPreviewImages([task.id]).get(task.id) ?? null;
-    return attachTaskActivity(task, comments, previewImage);
+    return attachTaskActivity(task, comments, activities, previewImage);
   }
 
   createTask(input) {
@@ -1243,9 +1305,10 @@ export class TaskboardDatabase {
     }
   }
 
-  updateTask(id, version, changes, threadId) {
+  updateTask(id, version, changes, threadId, actor) {
     const current = this.#requireTask(id);
     this.#requireVersion(current, version);
+    const activityChanges = taskFieldChanges(current, changes);
     const targetProject = Object.hasOwn(changes, "projectId")
       ? this.database.prepare("SELECT id, name, workspace_path FROM projects WHERE id = ?").get(changes.projectId)
       : null;
@@ -1341,6 +1404,7 @@ export class TaskboardDatabase {
           UPDATE projects SET updated_at = ? WHERE id IN (?, ?)
         `).run(timestamp, current.projectId, targetProject.id);
       }
+      this.#recordTaskActivity(current.id, actor, activityChanges, timestamp);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -1349,7 +1413,7 @@ export class TaskboardDatabase {
     return this.getTask(current.id);
   }
 
-  moveTask(id, version, status, sortOrder, threadId) {
+  moveTask(id, version, status, sortOrder, threadId, actor) {
     const current = this.#requireTask(id);
     this.#requireVersion(current, version);
     if (current.archivedAt !== null) {
@@ -1382,6 +1446,12 @@ export class TaskboardDatabase {
       if (result.changes !== 1) {
         this.#throwMissingOrConflict(id, version);
       }
+      this.#recordTaskActivity(
+        current.id,
+        actor,
+        taskFieldChanges(current, { status }),
+        timestamp,
+      );
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -1390,7 +1460,7 @@ export class TaskboardDatabase {
     return this.getTask(current.id);
   }
 
-  archiveTask(id, version, threadId) {
+  archiveTask(id, version, threadId, actor) {
     const current = this.#requireTask(id);
     this.#requireVersion(current, version);
     const timestamp = now();
@@ -1404,6 +1474,12 @@ export class TaskboardDatabase {
       if (result.changes !== 1) {
         this.#throwMissingOrConflict(id, version);
       }
+      this.#recordTaskActivity(
+        current.id,
+        actor,
+        [{ field: "archivedAt", before: current.archivedAt, after: timestamp }],
+        timestamp,
+      );
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -1412,7 +1488,7 @@ export class TaskboardDatabase {
     return this.getTask(current.id);
   }
 
-  restoreTask(id, version, threadId) {
+  restoreTask(id, version, threadId, actor) {
     const current = this.#requireTask(id);
     this.#requireVersion(current, version);
     if (current.archivedAt === null) {
@@ -1429,6 +1505,12 @@ export class TaskboardDatabase {
       if (result.changes !== 1) {
         this.#throwMissingOrConflict(id, version);
       }
+      this.#recordTaskActivity(
+        current.id,
+        actor,
+        [{ field: "archivedAt", before: current.archivedAt, after: null }],
+        timestamp,
+      );
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -1437,7 +1519,7 @@ export class TaskboardDatabase {
     return this.getTask(current.id);
   }
 
-  addTaskRelation(id, version, type, relatedId, threadId) {
+  addTaskRelation(id, version, type, relatedId, threadId, actor) {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const task = this.#requireTask(id);
@@ -1477,12 +1559,21 @@ export class TaskboardDatabase {
         }
       }
 
+      const timestamp = now();
+      const previousRelation = type === "parent" && task.relations.parent
+        ? relationActivityValue(type, task.relations.parent)
+        : null;
       this.database.prepare(`
         INSERT INTO task_relations (
           relation_type, source_task_id, target_task_id, created_at
         ) VALUES (?, ?, ?, ?)
-      `).run(relationType, sourceTaskId, targetTaskId, now());
-      this.#touchTask(task.id, version, threadId);
+      `).run(relationType, sourceTaskId, targetTaskId, timestamp);
+      this.#touchTask(task.id, version, threadId, timestamp);
+      this.#recordTaskActivity(task.id, actor, [{
+        field: "relation",
+        before: previousRelation,
+        after: relationActivityValue(type, relatedTask),
+      }], timestamp);
       this.database.exec("COMMIT");
       return {
         task: this.getTask(task.id),
@@ -1494,7 +1585,7 @@ export class TaskboardDatabase {
     }
   }
 
-  removeTaskRelation(id, version, type, relatedId, threadId) {
+  removeTaskRelation(id, version, type, relatedId, threadId, actor) {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const task = this.#requireTask(id);
@@ -1513,7 +1604,13 @@ export class TaskboardDatabase {
       if (removed.changes !== 1) {
         throw new ApiError(404, "RELATION_NOT_FOUND", "This issue relation does not exist");
       }
-      this.#touchTask(task.id, version, threadId);
+      const timestamp = now();
+      this.#touchTask(task.id, version, threadId, timestamp);
+      this.#recordTaskActivity(task.id, actor, [{
+        field: "relation",
+        before: relationActivityValue(type, relatedTask),
+        after: null,
+      }], timestamp);
       this.database.exec("COMMIT");
       return {
         task: this.getTask(task.id),
@@ -1523,6 +1620,15 @@ export class TaskboardDatabase {
       this.database.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  listTaskActivities(taskId) {
+    const task = this.#requireTask(taskId);
+    return this.database.prepare(`
+      SELECT * FROM task_activities
+      WHERE task_id = ?
+      ORDER BY created_at, id
+    `).all(task.id).map(taskActivityFromRow);
   }
 
   listComments(taskId) {
@@ -1685,6 +1791,22 @@ export class TaskboardDatabase {
     return commentsByTask;
   }
 
+  #activitiesForTasks(taskIds) {
+    const activitiesByTask = new Map(taskIds.map((taskId) => [taskId, []]));
+    for (let offset = 0; offset < taskIds.length; offset += 400) {
+      const chunk = taskIds.slice(offset, offset + 400);
+      if (chunk.length === 0) continue;
+      const placeholders = chunk.map(() => "?").join(", ");
+      const rows = this.database.prepare(`
+        SELECT * FROM task_activities
+        WHERE task_id IN (${placeholders})
+        ORDER BY task_id, created_at, id
+      `).all(...chunk);
+      for (const row of rows) activitiesByTask.get(row.task_id)?.push(row);
+    }
+    return activitiesByTask;
+  }
+
   #taskPreviewImages(taskIds) {
     const imagesByTask = new Map();
     for (let offset = 0; offset < taskIds.length; offset += 400) {
@@ -1824,12 +1946,30 @@ export class TaskboardDatabase {
     }
   }
 
-  #touchTask(id, version, threadId) {
+  #recordTaskActivity(taskId, actor, changes, timestamp) {
+    if (changes.length === 0) return;
+    this.database.prepare(`
+      INSERT INTO task_activities (
+        id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, changes, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      randomUUID(),
+      taskId,
+      actor.type,
+      actor.id,
+      actor.name,
+      actor.avatarUrl,
+      JSON.stringify(changes),
+      timestamp,
+    );
+  }
+
+  #touchTask(id, version, threadId, timestamp) {
     const result = this.database.prepare(`
       UPDATE tasks
       SET thread_id = COALESCE(?, thread_id), version = version + 1, updated_at = ?
       WHERE id = ? AND version = ?
-    `).run(threadId ?? null, now(), id, version);
+    `).run(threadId ?? null, timestamp, id, version);
     if (result.changes !== 1) {
       this.#throwMissingOrConflict(id, version);
     }
