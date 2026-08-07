@@ -836,7 +836,9 @@ async function hydrateTask(env, row, activityComments = null, activityChanges = 
     ORDER BY id
   `).bind(task.id));
   const activities = activityChanges ?? await all(env.DB.prepare(`
-    SELECT * FROM task_activities
+    SELECT
+      id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, created_at
+    FROM task_activities
     WHERE task_id = ?
     ORDER BY created_at, id
   `).bind(task.id));
