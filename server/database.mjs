@@ -973,13 +973,14 @@ export class TaskboardDatabase {
     return row ? this.#aiChatThreadWithCurrentRun(row) : null;
   }
 
-  hasAiChatThreadProjectConflict(issueId, projectId) {
+  hasAiChatThreadProjectConflict(issueRef, projectId) {
     return Boolean(this.database.prepare(`
       SELECT 1
       FROM ai_chat_threads
-      WHERE origin_issue_id = ? AND origin_project_id != ?
+      WHERE (origin_issue_id = ? OR origin_issue_identifier = ?)
+        AND origin_project_id != ?
       LIMIT 1
-    `).get(issueId, projectId));
+    `).get(issueRef, issueRef, projectId));
   }
 
   createAiChatThread(input) {

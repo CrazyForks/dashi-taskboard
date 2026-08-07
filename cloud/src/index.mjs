@@ -1847,6 +1847,13 @@ async function addRelation(env, taskId, type, relatedTaskId, input, actor) {
     results = await env.DB.batch(statements);
   } catch (error) {
     const message = String(error.message);
+    if (message.includes("CROSS_PROJECT_RELATION")) {
+      throw new ApiError(
+        400,
+        "CROSS_PROJECT_RELATION",
+        "Issue relations must stay within one project",
+      );
+    }
     if (message.includes("RELATION_CYCLE")) {
       throw new ApiError(409, "RELATION_CYCLE", "This parent would create a cycle");
     }
