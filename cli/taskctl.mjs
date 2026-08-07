@@ -25,7 +25,7 @@ const COMMAND_OPTIONS = new Map([
   ["cloud login", new Set(["url", "actor-name", "json"])],
   ["cloud status", new Set(["json"])],
   ["cloud logout", new Set(["json"])],
-  ["issue list", new Set(["project", "status", "json"])],
+  ["issue list", new Set(["project", "status", "archived", "json"])],
   ["issue get", new Set(["json"])],
   [
     "issue create",
@@ -480,9 +480,13 @@ async function listIssues(api, options) {
   if (options.status !== undefined) {
     assertStatus(options.status);
   }
+  if (options.archived !== undefined && !["true", "false", "all"].includes(options.archived)) {
+    throw usageError("--archived must be true, false, or all");
+  }
   const search = new URLSearchParams();
   if (options.project !== undefined) search.set("projectId", options.project);
   if (options.status !== undefined) search.set("status", options.status);
+  if (options.archived !== undefined) search.set("archived", options.archived);
   const query = search.size > 0 ? `?${search}` : "";
   return api.request("GET", `/api/tasks${query}`);
 }
