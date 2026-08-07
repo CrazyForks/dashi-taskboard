@@ -260,6 +260,83 @@ test("PATCH moves an issue to an existing project and records the change", async
   assert.equal(stale.body.error.code, "VERSION_CONFLICT");
 });
 
+test("PATCH rejects moving an issue that still has relations", async () => {
+  await createProject("move-related-cloud-source");
+  await createProject("move-related-cloud-target");
+  const sourceTask = await createTask(
+    "move-related-cloud-source",
+    "Cloud related source",
+  );
+  const relatedTask = await createTask(
+    "move-related-cloud-source",
+    "Cloud related peer",
+  );
+  const linked = await cloud.request(
+    `/api/tasks/${sourceTask.body.task.id}/relations/related/${relatedTask.body.task.id}`,
+    {
+      method: "POST",
+      actorName: alice,
+      json: { version: sourceTask.body.task.version },
+    },
+  );
+  assert.equal(linked.response.status, 200);
+
+  const rejected = await cloud.request(`/api/tasks/${sourceTask.body.task.id}`, {
+    method: "PATCH",
+    actorName: alice,
+    json: {
+      version: linked.body.task.version,
+      projectId: "move-related-cloud-target",
+    },
+  });
+
+  assert.equal(rejected.response.status, 409);
+  assert.equal(rejected.body.error.code, "CROSS_PROJECT_RELATION");
+  const unchanged = await cloud.request(`/api/tasks/${sourceTask.body.task.id}`, {
+    actorName: alice,
+  });
+  assert.equal(unchanged.body.task.projectId, "move-related-cloud-source");
+  assert.equal(unchanged.body.task.version, linked.body.task.version);
+  assert.deepEqual(
+    unchanged.body.task.relations.related.map((task) => task.id),
+    [relatedTask.body.task.id],
+  );
+});
+
+test("PATCH project and status updates use the target status ordering", async () => {
+  await createProject("move-sort-cloud-source");
+  await createProject("move-sort-cloud-target");
+  await createTask("move-sort-cloud-target", "Cloud target first", alice, {
+    status: "done",
+    sortOrder: 5000,
+  });
+  await createTask("move-sort-cloud-target", "Cloud target second", alice, {
+    status: "done",
+    sortOrder: 7000,
+  });
+  const sourceTask = await createTask(
+    "move-sort-cloud-source",
+    "Cloud move and complete",
+    alice,
+    { status: "todo", sortOrder: 9000 },
+  );
+
+  const moved = await cloud.request(`/api/tasks/${sourceTask.body.task.id}`, {
+    method: "PATCH",
+    actorName: alice,
+    json: {
+      version: sourceTask.body.task.version,
+      projectId: "move-sort-cloud-target",
+      status: "done",
+    },
+  });
+
+  assert.equal(moved.response.status, 200, JSON.stringify(moved.body));
+  assert.equal(moved.body.task.projectId, "move-sort-cloud-target");
+  assert.equal(moved.body.task.status, "done");
+  assert.equal(moved.body.task.sortOrder, 4000);
+});
+
 test("PATCH rejects moving an issue to a project that does not exist", async () => {
   await createProject("missing-target-source");
   const sourceTask = await createTask(

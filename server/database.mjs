@@ -630,18 +630,16 @@ export class TaskboardDatabase {
     `).get();
     if (hasTaskThreads) {
       this.database.exec(`
-        UPDATE tasks
+        UPDATE tasks AS migrated_task
         SET thread_id = COALESCE(thread_id, (
           SELECT task_threads.thread_id
           FROM task_threads
-          WHERE task_threads.task_id = tasks.id
+          LEFT JOIN comments
+            ON comments.task_id = task_threads.task_id
+            AND comments.thread_id = task_threads.thread_id
+          WHERE task_threads.task_id = migrated_task.id
           ORDER BY
-            CASE WHEN EXISTS (
-              SELECT 1
-              FROM comments
-              WHERE comments.task_id = tasks.id
-                AND comments.thread_id = task_threads.thread_id
-            ) THEN 1 ELSE 0 END,
+            CASE WHEN comments.id IS NOT NULL THEN 1 ELSE 0 END,
             task_threads.created_at DESC,
             task_threads.thread_id DESC
           LIMIT 1
@@ -973,6 +971,15 @@ export class TaskboardDatabase {
   getAiChatThread(id) {
     const row = this.database.prepare("SELECT * FROM ai_chat_threads WHERE id = ?").get(id);
     return row ? this.#aiChatThreadWithCurrentRun(row) : null;
+  }
+
+  hasAiChatThreadProjectConflict(issueId, projectId) {
+    return Boolean(this.database.prepare(`
+      SELECT 1
+      FROM ai_chat_threads
+      WHERE origin_issue_id = ? AND origin_project_id != ?
+      LIMIT 1
+    `).get(issueId, projectId));
   }
 
   createAiChatThread(input) {
@@ -1337,6 +1344,29 @@ export class TaskboardDatabase {
     if (Object.hasOwn(changes, "projectId") && !targetProject) {
       throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${changes.projectId}' does not exist`);
     }
+    const projectChanged = Boolean(targetProject && targetProject.id !== current.projectId);
+    if (projectChanged) {
+      const relation = this.database.prepare(`
+        SELECT 1
+        FROM task_relations
+        WHERE source_task_id = ? OR target_task_id = ?
+        LIMIT 1
+      `).get(current.id, current.id);
+      if (relation) {
+        throw new ApiError(
+          409,
+          "CROSS_PROJECT_RELATION",
+          "Remove issue relations before moving the issue to another project",
+        );
+      }
+      if (this.hasAiChatThreadProjectConflict(current.id, targetProject.id)) {
+        throw new ApiError(
+          409,
+          "AI_CHAT_PROJECT_MOVE_BLOCKED",
+          "Delete issue-linked AI conversations before moving the issue to another project",
+        );
+      }
+    }
     const dueDate = Object.hasOwn(changes, "dueDate") ? changes.dueDate : current.dueDate;
     const recurrence = Object.hasOwn(changes, "recurrence") ? changes.recurrence : current.recurrence;
     if (recurrence && !dueDate) {
@@ -1385,11 +1415,12 @@ export class TaskboardDatabase {
       values.push(key === "labels" ? JSON.stringify(value) : value);
     }
     if (Object.hasOwn(changes, "status") && changes.status !== current.status) {
+      const placementProjectId = projectChanged ? targetProject.id : current.projectId;
       const row = this.database.prepare(`
         SELECT MIN(sort_order) AS minimum
         FROM tasks
         WHERE project_id = ? AND status = ? AND archived_at IS NULL AND id != ?
-      `).get(current.projectId, changes.status, current.id);
+      `).get(placementProjectId, changes.status, current.id);
       assignments.push("sort_order = ?");
       values.push(row.minimum === null ? 1000 : row.minimum - 1000);
     }
@@ -1409,19 +1440,7 @@ export class TaskboardDatabase {
       if (result.changes !== 1) {
         this.#throwMissingOrConflict(id, version);
       }
-      if (targetProject && targetProject.id !== current.projectId) {
-        this.database.prepare(`
-          UPDATE ai_chat_threads
-          SET origin_project_id = ?, origin_project_name = ?, origin_workspace_path = ?, updated_at = ?
-          WHERE origin_issue_id = ? AND origin_project_id = ?
-        `).run(
-          targetProject.id,
-          targetProject.name,
-          targetProject.workspace_path ?? "",
-          timestamp,
-          current.id,
-          current.projectId,
-        );
+      if (projectChanged) {
         this.database.prepare(`
           UPDATE projects SET updated_at = ? WHERE id IN (?, ?)
         `).run(timestamp, current.projectId, targetProject.id);
@@ -1820,7 +1839,9 @@ export class TaskboardDatabase {
       if (chunk.length === 0) continue;
       const placeholders = chunk.map(() => "?").join(", ");
       const rows = this.database.prepare(`
-        SELECT * FROM task_activities
+        SELECT
+          id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, created_at
+        FROM task_activities
         WHERE task_id IN (${placeholders})
         ORDER BY task_id, created_at, id
       `).all(...chunk);

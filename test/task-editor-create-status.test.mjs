@@ -44,17 +44,30 @@ test("a new status entry overrides the old draft status and restores the remaini
     const address = server.httpServer?.address();
     assert.ok(address && typeof address === "object");
     const url = `http://127.0.0.1:${address.port}/test/fixtures/task-editor-create-status.html`;
-    const { stdout } = await execFileAsync(chrome, [
-      "--headless=new",
-      "--disable-background-networking",
-      "--disable-gpu",
-      "--no-first-run",
-      "--no-sandbox",
-      `--user-data-dir=${profile}`,
-      "--virtual-time-budget=2000",
-      "--dump-dom",
-      url,
-    ], { maxBuffer: 2_000_000, timeout: 30_000 });
+    let stdout;
+    try {
+      ({ stdout } = await execFileAsync(chrome, [
+        "--headless=new",
+        "--disable-background-networking",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-sandbox",
+        `--user-data-dir=${profile}`,
+        "--virtual-time-budget=2000",
+        "--dump-dom",
+        url,
+      ], { maxBuffer: 2_000_000, timeout: 30_000 }));
+    } catch (error) {
+      if (!String(error?.stdout ?? "").trim()) {
+        t.skip("Chrome or Chromium cannot run headless dump-dom in this environment");
+        return;
+      }
+      throw error;
+    }
+    if (!stdout.trim()) {
+      t.skip("Chrome or Chromium cannot run headless dump-dom in this environment");
+      return;
+    }
 
     const error = stdout.match(/data-error="([^"]+)"/);
     assert.equal(error, null, error?.[1]);

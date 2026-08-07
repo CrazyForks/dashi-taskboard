@@ -883,7 +883,9 @@ async function taskActivitiesForTasks(env, taskIds) {
     if (chunk.length === 0) continue;
     const placeholders = chunk.map(() => "?").join(", ");
     batches.push(all(env.DB.prepare(`
-      SELECT * FROM task_activities
+      SELECT
+        id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, created_at
+      FROM task_activities
       WHERE task_id IN (${placeholders})
       ORDER BY task_id, created_at, id
     `).bind(...chunk)));
@@ -1405,6 +1407,22 @@ async function updateTask(env, id, input, actor) {
   const targetProject = Object.hasOwn(input.changes, "projectId")
     ? await requireProject(env, input.changes.projectId)
     : null;
+  const projectChanged = Boolean(targetProject && targetProject.id !== currentTask.projectId);
+  if (projectChanged) {
+    const relation = await env.DB.prepare(`
+      SELECT 1
+      FROM task_relations
+      WHERE source_task_id = ? OR target_task_id = ?
+      LIMIT 1
+    `).bind(current.id, current.id).first();
+    if (relation) {
+      throw new ApiError(
+        409,
+        "CROSS_PROJECT_RELATION",
+        "Remove issue relations before moving the issue to another project",
+      );
+    }
+  }
   const activityValues = { ...input.changes };
   const dueDate = Object.hasOwn(input.changes, "dueDate")
     ? input.changes.dueDate
@@ -1441,15 +1459,15 @@ async function updateTask(env, id, input, actor) {
       values.push(key === "labels" ? JSON.stringify(value) : value);
     }
   }
-  const projectChanged = targetProject && targetProject.id !== currentTask.projectId;
   const statusChanged = Object.hasOwn(input.changes, "status")
     && input.changes.status !== currentTask.status;
   if (statusChanged) {
+    const placementProjectId = projectChanged ? targetProject.id : currentTask.projectId;
     const row = await env.DB.prepare(`
       SELECT MIN(sort_order) AS minimum
       FROM tasks
       WHERE project_id = ? AND status = ? AND archived_at IS NULL AND id != ?
-    `).bind(current.project_id, input.changes.status, current.id).first();
+    `).bind(placementProjectId, input.changes.status, current.id).first();
     assignments.push("sort_order = ?");
     values.push(row?.minimum == null ? 1000 : row.minimum - 1000);
   }
@@ -1471,10 +1489,14 @@ async function updateTask(env, id, input, actor) {
   assignments.push("version = version + 1", "updated_at = ?");
   const timestamp = now();
   values.push(timestamp, current.id, input.version);
+  if (projectChanged) values.push(current.id, current.id);
+  const relationGuard = projectChanged
+    ? " AND NOT EXISTS (SELECT 1 FROM task_relations WHERE source_task_id = ? OR target_task_id = ?)"
+    : "";
   const statements = [env.DB.prepare(`
     UPDATE tasks
     SET ${assignments.join(", ")}
-    WHERE id = ? AND version = ?
+    WHERE id = ? AND version = ?${relationGuard}
   `).bind(...values)];
   const activityChanges = taskFieldChanges(currentTask, activityValues);
   if (activityChanges.length > 0) {
@@ -1506,6 +1528,21 @@ async function updateTask(env, id, input, actor) {
   }
   const results = await env.DB.batch(statements);
   if (!changed(results[0])) {
+    if (projectChanged) {
+      const relation = await env.DB.prepare(`
+        SELECT 1
+        FROM task_relations
+        WHERE source_task_id = ? OR target_task_id = ?
+        LIMIT 1
+      `).bind(current.id, current.id).first();
+      if (relation) {
+        throw new ApiError(
+          409,
+          "CROSS_PROJECT_RELATION",
+          "Remove issue relations before moving the issue to another project",
+        );
+      }
+    }
     const latest = await requireTaskRow(env, current.id);
     throw new ApiError(
       409,

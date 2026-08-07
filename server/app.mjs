@@ -1333,6 +1333,14 @@ export function createTaskboardServer(options = {}) {
         candidate.type === "worktree" && candidate.branch === context.branch
       )) ?? null;
     },
+    assertTaskProjectMoveAllowed: (taskId, targetProjectId) => {
+      if (!database.hasAiChatThreadProjectConflict(taskId, targetProjectId)) return;
+      throw new CloudProxyError(
+        409,
+        "AI_CHAT_PROJECT_MOVE_BLOCKED",
+        "Delete issue-linked AI conversations before moving the issue to another project",
+      );
+    },
   });
   async function readCloudJson(pathname) {
     const upstream = await cloudProxy.forward(new Request(`http://127.0.0.1${pathname}`, {

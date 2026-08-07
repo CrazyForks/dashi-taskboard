@@ -84,7 +84,7 @@ test("health and the default local project are available", async () => {
   assert.equal(result.response.status, 200);
   assert.equal(result.body.projects.length, 1);
   assert.equal(result.body.projects[0].id, "local");
-  assert.equal(result.body.projects[0].name, "Local");
+  assert.equal(result.body.projects[0].name, "全局");
   assert.equal(result.body.projects[0].workspacePath, null);
   assert.equal(result.body.projects[0].issueCount, 0);
 });
@@ -735,8 +735,20 @@ done
   assert.equal(result.response.status, 200);
   assert.deepEqual(result.body, {
     skills: [
-      { id: "repo-skill", label: "Repository Skill", scope: "repo" },
-      { id: "user-skill", label: "user-skill", scope: "user" },
+      {
+        id: "repo-skill",
+        label: "Repository Skill",
+        description: "",
+        path: "",
+        scope: "repo",
+      },
+      {
+        id: "user-skill",
+        label: "user-skill",
+        description: "",
+        path: "",
+        scope: "user",
+      },
     ],
     mcpServers: [
       { id: "context7", label: "context7", transport: "streamable_http" },
