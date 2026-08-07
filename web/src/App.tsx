@@ -2022,7 +2022,7 @@ export function App() {
                           else void selectProject(project);
                         }}
                       >
-                        <span className="project-avatar" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span>
+                        <TaskboardIcon className="project-avatar" name="projectFolder" />
                         <span>{project.name}</span>
                         {project.id === selectedProjectId && <span className="project-menu-check" aria-hidden="true"><LinearIcon name="check" /></span>}
                       </button>

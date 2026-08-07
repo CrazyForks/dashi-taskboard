@@ -18,6 +18,7 @@ import dropdown from "../assets/figma-taskboard/dropdown.svg";
 import filter from "../assets/figma-taskboard/filter.svg";
 import home from "../assets/figma-taskboard/home.svg";
 import panel from "../assets/figma-taskboard/panel.svg";
+import projectFolder from "../assets/figma-taskboard/project-folder.svg";
 import relationBlockedBy from "../assets/figma-taskboard/relation-blocked-by.svg";
 import relationBlocks from "../assets/figma-taskboard/relation-blocks.svg";
 import search from "../assets/figma-taskboard/search.svg";
@@ -47,6 +48,7 @@ const TASKBOARD_ICONS = {
   filter,
   home,
   panel,
+  projectFolder,
   relationBlockedBy,
   relationBlocks,
   search,
