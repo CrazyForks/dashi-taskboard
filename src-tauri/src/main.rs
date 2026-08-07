@@ -453,7 +453,10 @@ fn main() {
         .expect("failed to build Codex Taskboard");
 
     app.run(|app_handle, event| {
-        if let tauri::RunEvent::ExitRequested { .. } = event {
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
             let state = app_handle.state::<Arc<LauncherState>>();
             stop_managed_child(app_handle, &state);
         }

@@ -184,9 +184,23 @@ function createTaskboardSupervisor({ detached }) {
     }
   }
 
-  function stop() {
+  async function stop() {
     stopping = true;
-    if (child?.exitCode === null && !child.killed) child.kill("SIGTERM");
+    const managedChild = child;
+    if (!managedChild || managedChild.exitCode !== null) return;
+    const exitPromise = new Promise((resolve) => {
+      managedChild.once("exit", () => resolve(true));
+    });
+    if (!managedChild.killed) managedChild.kill("SIGTERM");
+
+    const exited = await Promise.race([
+      exitPromise,
+      new Promise((resolve) => setTimeout(() => resolve(false), 3_000)),
+    ]);
+    if (!exited && managedChild.exitCode === null) {
+      managedChild.kill("SIGKILL");
+      await exitPromise;
+    }
   }
 
   return { ensure, stop };
@@ -1214,9 +1228,9 @@ async function main() {
       return;
     }
 
-    const stop = () => {
+    const stop = async () => {
       injectedTargets.forEach((connection) => connection.close());
-      supervisor.stop();
+      await supervisor.stop();
       process.exit(0);
     };
     process.once("SIGINT", stop);
@@ -1256,9 +1270,9 @@ async function main() {
         console.error(`Waiting for Codex renderer: ${error.message}`);
       }
     }
-    supervisor.stop();
+    await supervisor.stop();
   } catch (error) {
-    supervisor.stop();
+    await supervisor.stop();
     throw error;
   }
 }
