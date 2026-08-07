@@ -14,6 +14,7 @@ import type {
   Project,
   ProjectSummary,
   Task,
+  TaskChangeActivity,
   TaskboardMetadata,
   TaskDraft,
   TaskStatus,
@@ -427,6 +428,17 @@ export async function listComments(taskId: string, signal?: AbortSignal): Promis
     { signal },
   );
   return data.comments;
+}
+
+export async function listTaskActivities(
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<TaskChangeActivity[]> {
+  const data = await request<{ activities: TaskChangeActivity[] }>(
+    `/api/tasks/${encodeURIComponent(taskId)}/activities`,
+    { signal },
+  );
+  return data.activities;
 }
 
 export async function createComment(taskId: string, body: string, threadId?: string): Promise<Comment> {

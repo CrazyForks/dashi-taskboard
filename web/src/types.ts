@@ -264,6 +264,23 @@ export interface Comment {
   updatedAt: string;
 }
 
+export interface TaskActivityChange {
+  field: string;
+  before: unknown;
+  after: unknown;
+}
+
+export interface TaskChangeActivity {
+  id: string;
+  taskId: string;
+  actorType: ActorType;
+  actorId: string;
+  actorName: string;
+  actorAvatarUrl: string | null;
+  changes: TaskActivityChange[];
+  createdAt: string;
+}
+
 export interface Attachment {
   id: string;
   taskId: string;

@@ -9,6 +9,7 @@ import {
   deleteComment,
   listAttachments,
   listComments,
+  listTaskActivities,
   uploadAttachment,
   uploadCommentAttachment,
   updateComment,
@@ -23,6 +24,7 @@ import type {
   IssueRelationType,
   Recurrence,
   Task,
+  TaskChangeActivity,
   TaskDraft,
   TaskPriority,
   TaskRelationSummary,
@@ -146,6 +148,75 @@ function contextLabel(context: DevelopmentContext): string {
   return `${context.branch ?? "detached"} · ${folder}`;
 }
 
+const ACTIVITY_FIELD_LABELS: Record<string, string> = {
+  projectId: "项目",
+  title: "标题",
+  description: "描述",
+  status: "状态",
+  priority: "优先级",
+  labels: "标签",
+  assignee: "负责人",
+  workflowId: "工作流",
+  developmentContext: "开发上下文",
+  startDate: "开始日期",
+  dueDate: "截止日期",
+  recurrence: "重复",
+  archivedAt: "归档状态",
+  relation: "关系",
+};
+
+const RELATION_LABELS: Record<IssueRelationType, string> = {
+  parent: "父议题",
+  blocks: "阻塞",
+  blocked_by: "阻塞于",
+  related: "相关议题",
+};
+
+function activityValue(field: string, value: unknown): string {
+  if (field === "archivedAt") {
+    return typeof value === "string" ? `已归档（${exactTime(value)}）` : "未归档";
+  }
+  if (value === null || value === "") return "未设置";
+  if (field === "status" && typeof value === "string" && value in STATUS_DETAILS) {
+    return STATUS_DETAILS[value as TaskStatus].label;
+  }
+  if (field === "priority" && typeof value === "string" && value in PRIORITY_DETAILS) {
+    return PRIORITY_DETAILS[value as TaskPriority].label;
+  }
+  if (field === "labels" && Array.isArray(value)) {
+    return value.length > 0 ? value.join("、") : "无标签";
+  }
+  if (field === "assignee" && typeof value === "object") {
+    const actor = value as ActorIdentity;
+    return `${actor.name} @${actor.id}`;
+  }
+  if (field === "developmentContext" && typeof value === "object") {
+    const context = value as { type: string; branch?: string | null; path?: string | null };
+    if (context.type === "branch") return context.branch ?? "未设置";
+    const folder = context.path?.split(/[\\/]/).filter(Boolean).at(-1);
+    return `${context.branch ?? "detached"}${folder ? ` · ${folder}` : ""}`;
+  }
+  if (field === "recurrence" && typeof value === "object") {
+    const recurrence = value as Recurrence;
+    const units: Record<Recurrence["unit"], string> = {
+      day: "天",
+      week: "周",
+      month: "月",
+      year: "年",
+    };
+    return recurrence.interval === 1
+      ? `每${units[recurrence.unit]}`
+      : `每 ${recurrence.interval} ${units[recurrence.unit]}`;
+  }
+  if (field === "relation" && typeof value === "object") {
+    const relation = value as { type: IssueRelationType; identifier: string; title: string };
+    return `${RELATION_LABELS[relation.type]} ${relation.identifier} · ${relation.title}`;
+  }
+  if (Array.isArray(value)) return value.join("、");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
 function DescriptionDocument({ value }: { value: string }) {
   return (
     <div className="issue-description-document">
@@ -218,6 +289,7 @@ export function TaskDetail({
   const [pendingAttachmentDelete, setPendingAttachmentDelete] = useState<Attachment | null>(null);
   const [deletingAttachment, setDeletingAttachment] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
+  const [taskActivities, setTaskActivities] = useState<TaskChangeActivity[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(true);
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [commentSegments, setCommentSegments] = useState<InlineMediaSegment[]>(
@@ -265,10 +337,15 @@ export function TaskDetail({
 
   useEffect(() => {
     const controller = new AbortController();
+    setCommentsLoading(true);
     setCommentsError(null);
-    void listComments(task.id, controller.signal).then(
-      (nextComments) => {
+    void Promise.all([
+      listComments(task.id, controller.signal),
+      listTaskActivities(task.id, controller.signal),
+    ]).then(
+      ([nextComments, nextActivities]) => {
         setComments(nextComments);
+        setTaskActivities(nextActivities);
         setCommentsLoading(false);
       },
       (error) => {
@@ -278,7 +355,7 @@ export function TaskDetail({
       },
     );
     return () => controller.abort();
-  }, [commentsRevision, task.id]);
+  }, [commentsRevision, task.activityKey, task.id]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -591,6 +668,22 @@ export function TaskDetail({
   const visibleTaskAttachments = attachments.filter(
     (attachment) => !description.includes(attachmentContentUrl(attachment)),
   );
+  const activityTimeline = [
+    ...taskActivities.map((activity) => ({
+      kind: "change" as const,
+      id: activity.id,
+      createdAt: activity.createdAt,
+      activity,
+    })),
+    ...comments.map((comment) => ({
+      kind: "comment" as const,
+      id: comment.id,
+      createdAt: comment.createdAt,
+      comment,
+    })),
+  ].sort((left, right) => (
+    left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+  ));
 
   return (
     <section className="issue-detail" aria-label={`${task.identifier} 议题详情`}>
@@ -767,7 +860,7 @@ export function TaskDetail({
             <section className="activity-section" aria-labelledby="activity-heading">
               <header className="activity-heading">
                 <h2 id="activity-heading">活动</h2>
-                <span>{comments.length}</span>
+                <span>{activityTimeline.length}</span>
               </header>
 
               <div className="activity-stream">
@@ -790,8 +883,49 @@ export function TaskDetail({
                 </div>
 
                 {commentsLoading ? (
-                  <div className="comments-loading" aria-label="正在加载评论" aria-busy="true"><i /><i /></div>
-                ) : comments.map((comment) => (
+                  <div className="comments-loading" aria-label="正在加载活动" aria-busy="true"><i /><i /></div>
+                ) : activityTimeline.map((item) => {
+                  if (item.kind === "change") {
+                    const activity = item.activity;
+                    return (
+                      <article
+                        className={`activity-change is-${activity.actorType}`}
+                        key={activity.id}
+                      >
+                        <header className="activity-change-header">
+                          <ActorAvatar
+                            className="comment-avatar"
+                            actor={{
+                              type: activity.actorType,
+                              id: activity.actorId,
+                              name: activity.actorName,
+                              avatarUrl: activity.actorAvatarUrl,
+                            }}
+                          />
+                          <p>
+                            <strong>{activity.actorName}</strong>
+                            <span className="actor-id">@{activity.actorId}</span>
+                            更新了议题
+                            <time title={exactTime(activity.createdAt)}>{relativeTime(activity.createdAt)}</time>
+                          </p>
+                        </header>
+                        <ul className="activity-change-list">
+                          {activity.changes.map((change, index) => (
+                            <li key={`${change.field}-${index}`}>
+                              <strong>{ACTIVITY_FIELD_LABELS[change.field] ?? change.field}</strong>
+                              <div className="activity-change-values">
+                                <span>{activityValue(change.field, change.before)}</span>
+                                <span aria-hidden="true">→</span>
+                                <span>{activityValue(change.field, change.after)}</span>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </article>
+                    );
+                  }
+                  const comment = item.comment;
+                  return (
                   <article
                     className={`comment-entry is-${comment.authorType}`}
                     key={comment.id}
@@ -915,7 +1049,8 @@ export function TaskDetail({
                       )}
                     </div>
                   </article>
-                ))}
+                  );
+                })}
               </div>
 
               {commentsError && <div className="comments-error" role="alert">{commentsError}</div>}
