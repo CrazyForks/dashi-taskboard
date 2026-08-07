@@ -51,14 +51,29 @@ const RECURRENCE_UNITS: Record<Recurrence["unit"], string> = {
   year: "年",
 };
 
+export interface NewTaskEditorDraft {
+  title: string;
+  descriptionSegments: InlineMediaSegment[];
+  status: TaskStatus;
+  priority: TaskPriority;
+  assignee: ActorIdentity;
+  selectedLabels: string[];
+  developmentContext: DevelopmentContext | null;
+  startDate: string;
+  dueDate: string;
+  recurrence: Recurrence | null;
+  attachments: File[];
+}
+
 interface TaskEditorProps {
   task: Task | null;
   initialStatus: TaskStatus;
+  initialDraft: NewTaskEditorDraft | null;
   labels: string[];
   currentUser: ActorIdentity;
   developmentScan: DevelopmentScan;
   developmentScanLoading: boolean;
-  onCancel: () => void;
+  onCancel: (draft: NewTaskEditorDraft | null) => void;
   onSave: (
     draft: TaskDraft,
     attachments: File[],
@@ -102,6 +117,7 @@ function contextLabel(context: DevelopmentContext): string {
 export function TaskEditor({
   task,
   initialStatus,
+  initialDraft,
   labels: availableLabels,
   currentUser,
   developmentScan,
@@ -112,25 +128,25 @@ export function TaskEditor({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
-  const [title, setTitle] = useState(task?.title ?? "");
+  const [title, setTitle] = useState(task?.title ?? initialDraft?.title ?? "");
   const [description, setDescription] = useState(task?.description ?? "");
   const [descriptionSegments, setDescriptionSegments] = useState<InlineMediaSegment[]>(
-    () => createInlineMediaSegments(),
+    () => initialDraft?.descriptionSegments ?? createInlineMediaSegments(),
   );
-  const [status, setStatus] = useState<TaskStatus>(task?.status ?? initialStatus);
-  const [priority, setPriority] = useState<TaskPriority>(task?.priority ?? "none");
-  const [assignee, setAssignee] = useState<ActorIdentity>(task?.assignee ?? currentUser);
-  const [selectedLabels, setSelectedLabels] = useState<string[]>(task?.labels ?? []);
-  const [developmentContext, setDevelopmentContext] = useState<DevelopmentContext | null>(task?.developmentContext ?? null);
-  const [startDate] = useState(task?.startDate ?? "");
-  const [dueDate, setDueDate] = useState(task?.dueDate ?? "");
-  const [recurrence, setRecurrence] = useState<Recurrence | null>(task?.recurrence ?? null);
+  const [status, setStatus] = useState<TaskStatus>(task?.status ?? initialDraft?.status ?? initialStatus);
+  const [priority, setPriority] = useState<TaskPriority>(task?.priority ?? initialDraft?.priority ?? "none");
+  const [assignee, setAssignee] = useState<ActorIdentity>(task?.assignee ?? initialDraft?.assignee ?? currentUser);
+  const [selectedLabels, setSelectedLabels] = useState<string[]>(task?.labels ?? initialDraft?.selectedLabels ?? []);
+  const [developmentContext, setDevelopmentContext] = useState<DevelopmentContext | null>(task?.developmentContext ?? initialDraft?.developmentContext ?? null);
+  const [startDate] = useState(task?.startDate ?? initialDraft?.startDate ?? "");
+  const [dueDate, setDueDate] = useState(task?.dueDate ?? initialDraft?.dueDate ?? "");
+  const [recurrence, setRecurrence] = useState<Recurrence | null>(task?.recurrence ?? initialDraft?.recurrence ?? null);
   const [menu, setMenu] = useState<"labels" | "more" | "due" | "recurrence" | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
-  const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachments, setAttachments] = useState<File[]>(initialDraft?.attachments ?? []);
 
   const developmentOptions = useMemo(() => {
     const options = [...developmentScan.contexts];
@@ -218,6 +234,22 @@ export function TaskEditor({
     setMenu(null);
   }
 
+  function cancelEditor() {
+    onCancel(task ? null : {
+      title,
+      descriptionSegments,
+      status,
+      priority,
+      assignee,
+      selectedLabels,
+      developmentContext,
+      startDate,
+      dueDate,
+      recurrence,
+      attachments,
+    });
+  }
+
   return (
     <dialog
       ref={dialogRef}
@@ -225,10 +257,10 @@ export function TaskEditor({
       aria-labelledby="task-dialog-title"
       onCancel={(event) => {
         event.preventDefault();
-        if (!saving) onCancel();
+        if (!saving) cancelEditor();
       }}
       onClick={(event) => {
-        if (event.target === event.currentTarget && !saving) onCancel();
+        if (event.target === event.currentTarget && !saving) cancelEditor();
       }}
     >
       <form className="task-form" onSubmit={handleSubmit}>
@@ -240,7 +272,7 @@ export function TaskEditor({
             <button type="button" className="icon-button dialog-expand" aria-label={expanded ? "收起编辑器" : "展开编辑器"} onClick={() => setExpanded((current) => !current)}>
               <LinearIcon name="expand" />
             </button>
-            <button type="button" className="icon-button dialog-close" onClick={onCancel} disabled={saving} aria-label="关闭编辑器">
+            <button type="button" className="icon-button dialog-close" onClick={cancelEditor} disabled={saving} aria-label="关闭编辑器">
               <LinearIcon name="close" />
             </button>
           </div>

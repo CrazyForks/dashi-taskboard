@@ -59,7 +59,7 @@ import { ProjectAutomationMenu } from "./components/ProjectAutomationMenu";
 import { TaskboardIcon } from "./components/TaskboardIcon";
 import { TaskContextMenu } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
-import { TaskEditor } from "./components/TaskEditor";
+import { TaskEditor, type NewTaskEditorDraft } from "./components/TaskEditor";
 import { TaskFilterMenu } from "./components/TaskFilterMenu";
 import { buildIssueUrl, readIssueIdentifier } from "./issueRoute";
 import {
@@ -573,6 +573,7 @@ export function App() {
   const [otherTasksVisible, setOtherTasksVisible] = useState(false);
   const [otherTasksStatus, setOtherTasksStatus] = useState<SecondaryTaskStatus>("backlog");
   const [editor, setEditor] = useState<EditorState | null>(null);
+  const [newTaskDraft, setNewTaskDraft] = useState<NewTaskEditorDraft | null>(null);
   const [detailTaskIdentifier, setDetailTaskIdentifier] = useState<string | null>(
     () => readIssueIdentifier(window.location.search),
   );
@@ -1568,6 +1569,7 @@ export function App() {
         ...current.filter((task) => task.id !== saved.id),
         saved,
       ]));
+      if (creating) setNewTaskDraft(null);
       setEditor(null);
       if (failedAttachments > 0) {
         setActionError(`${saved.identifier} 已创建，但有 ${failedAttachments} 个附件上传失败，可在详情页重试。`);
@@ -2343,11 +2345,15 @@ export function App() {
           key={editor.task?.id ?? `new-${editor.status}`}
           task={editor.task}
           initialStatus={editor.status}
+          initialDraft={editor.task ? null : newTaskDraft}
           labels={availableLabels}
           currentUser={currentUser}
           developmentScan={developmentScan}
           developmentScanLoading={developmentScanLoading}
-          onCancel={() => setEditor(null)}
+          onCancel={(draft) => {
+            if (!editor.task) setNewTaskDraft(draft);
+            setEditor(null);
+          }}
           onSave={saveEditor}
         />
       )}
