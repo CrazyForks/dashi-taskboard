@@ -4,6 +4,7 @@ import automationPause from "../assets/figma-taskboard/automation-pause.svg";
 import automationPlay from "../assets/figma-taskboard/automation-play.svg";
 import breadcrumb from "../assets/figma-taskboard/breadcrumb.svg";
 import calendar from "../assets/figma-taskboard/calendar.svg";
+import columnAddBlocked from "../assets/figma-taskboard/column-add-blocked.svg";
 import columnAddProgress from "../assets/figma-taskboard/column-add-progress.svg";
 import columnAddReview from "../assets/figma-taskboard/column-add-review.svg";
 import columnAddTodo from "../assets/figma-taskboard/column-add-todo.svg";
@@ -35,6 +36,7 @@ const TASKBOARD_ICONS = {
   breadcrumb,
   calendar,
   columnAdd,
+  columnAddBlocked,
   columnAddProgress,
   columnAddReview,
   columnAddTodo,

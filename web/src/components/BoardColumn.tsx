@@ -46,6 +46,7 @@ const COLUMN_ADD_ICONS: Partial<Record<TaskStatus, TaskboardIconName>> = {
   todo: "columnAddTodo",
   in_progress: "columnAddProgress",
   in_review: "columnAddReview",
+  blocked: "columnAddBlocked",
 };
 
 export function statusIconSource(status: TaskStatus) {
