@@ -1,0 +1,138 @@
+name: Release macOS
+
+on:
+  push:
+    tags:
+      - "app-v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "要创建的版本标签，例如 app-v0.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-macos:
+    name: Build signed universal macOS app
+    runs-on: macos-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Resolve release tag
+        env:
+          DISPATCH_TAG: ${{ inputs.release_tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            RELEASE_TAG="$DISPATCH_TAG"
+          else
+            RELEASE_TAG="$REF_NAME"
+          fi
+
+          APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [[ "$RELEASE_TAG" != "app-v$APP_VERSION" ]]; then
+            echo "发布标签必须与 src-tauri/tauri.conf.json 的版本一致。" >&2
+            exit 1
+          fi
+
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web interface
+        run: npm run build:web
+
+      - name: Prepare universal app resources
+        run: npm run app:prepare -- --target universal-apple-darwin
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          umask 077
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/codex-taskboard-signing.keychain-db"
+
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+      - name: Prepare App Store Connect API key
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          umask 077
+          APPLE_API_KEY_PATH="$RUNNER_TEMP/app-store-connect.p8"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$APPLE_API_KEY_PATH"
+          echo "APPLE_API_KEY_PATH=$APPLE_API_KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize, and create draft release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: "Codex Taskboard ${{ env.RELEASE_TAG }}"
+          releaseBody: |
+            macOS universal 安装包。此 Release 是待人工验证的 Draft，验证完成后再手动发布。
+          releaseCommitish: ${{ github.sha }}
+          releaseDraft: true
+          prerelease: false
+          generateReleaseNotes: true
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          args: --target universal-apple-darwin --bundles app,dmg
+
+      - name: Remove temporary signing files
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/codex-taskboard-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+          rm -f "$RUNNER_TEMP/app-store-connect.p8"
