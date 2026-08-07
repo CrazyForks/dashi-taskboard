@@ -741,13 +741,6 @@
   gap: 8px;
 }
 
-.dashboard-view .dashboard-running-state-icon {
-  display: block;
-  width: 12px;
-  height: 12px;
-  flex: 0 0 auto;
-}
-
 .dashboard-view .dashboard-running-footer .task-processing-label {
   font-size: 11px;
   line-height: 16.5px;
