@@ -655,6 +655,9 @@ export function App() {
   }, []);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
+  useLayoutEffect(() => {
+    if (selectedProject) rememberProjectOpen(selectedProject.id);
+  }, [rememberProjectOpen, selectedProject]);
   const currentUser = hostContext?.user ?? DEFAULT_USER_ACTOR;
   const selectedDeviceWorkspacePath = selectedProjectId === GLOBAL_PROJECT_ID
     ? undefined
