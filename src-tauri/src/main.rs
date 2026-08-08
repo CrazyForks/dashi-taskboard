@@ -14,9 +14,10 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{ActivationPolicy, AppHandle, Emitter, Manager};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
-use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 const LAUNCHER_PORT: &str = "9231";
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -351,87 +352,55 @@ fn start_launcher(app: &AppHandle, state: &Arc<LauncherState>) -> Result<Launche
     Ok(snapshot)
 }
 
-#[tauri::command]
-fn launcher_status(state: State<'_, Arc<LauncherState>>) -> LauncherSnapshot {
-    state.snapshot.lock().unwrap().clone()
-}
-
-#[tauri::command]
-fn restart_launcher(
-    app: AppHandle,
-    state: State<'_, Arc<LauncherState>>,
-) -> Result<LauncherSnapshot, String> {
-    stop_managed_child(&app, &state);
-    start_launcher(&app, &state)
-}
-
-async fn check_updates(
+async fn check_for_startup_update(
     app: &AppHandle,
     state: &Arc<LauncherState>,
-) -> Result<LauncherSnapshot, String> {
+) -> Result<Option<Update>, String> {
     update_snapshot(app, state, |snapshot| {
         snapshot.update_message = "正在检查更新…".into();
         snapshot.update_available = false;
     });
-    match app
+    let update = app
         .updater()
         .map_err(|error| error.to_string())?
         .check()
         .await
-        .map_err(|error| error.to_string())?
-    {
-        Some(update) => Ok(update_snapshot(app, state, |snapshot| {
-            snapshot.update_message = format!("发现新版本 {}，可以下载并安装。", update.version);
-            snapshot.update_available = true;
-        })),
-        None => Ok(update_snapshot(app, state, |snapshot| {
-            snapshot.update_message = "当前已是最新版本。".into();
-            snapshot.update_available = false;
-        })),
+        .map_err(|error| error.to_string())?;
+    match &update {
+        Some(update) => {
+            append_log(state, &format!("Update {} is available", update.version));
+            update_snapshot(app, state, |snapshot| {
+                snapshot.update_message =
+                    format!("发现新版本 {}，可以下载并安装。", update.version);
+                snapshot.update_available = true;
+            });
+        }
+        None => {
+            append_log(state, "No update is available");
+            update_snapshot(app, state, |snapshot| {
+                snapshot.update_message = "当前已是最新版本。".into();
+                snapshot.update_available = false;
+            });
+        }
     }
+    Ok(update)
 }
 
-#[tauri::command]
-async fn check_for_updates(
-    app: AppHandle,
-    state: State<'_, Arc<LauncherState>>,
-) -> Result<LauncherSnapshot, String> {
-    check_updates(&app, &state).await
-}
-
-#[tauri::command]
-async fn download_and_install_update(
-    app: AppHandle,
-    state: State<'_, Arc<LauncherState>>,
-) -> Result<LauncherSnapshot, String> {
-    update_snapshot(&app, &state, |snapshot| {
-        snapshot.update_message = "正在确认更新版本…".into();
+async fn install_update(
+    app: &AppHandle,
+    state: &Arc<LauncherState>,
+    update: Update,
+) -> Result<(), String> {
+    let update_version = update.version.clone();
+    update_snapshot(app, state, |snapshot| {
+        snapshot.update_message = format!("正在下载版本 {update_version}…");
         snapshot.update_available = false;
     });
-    let update = match app
-        .updater()
-        .map_err(|error| error.to_string())?
-        .check()
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        Some(update) => update,
-        None => {
-            return Ok(update_snapshot(&app, &state, |snapshot| {
-                snapshot.update_message = "当前已是最新版本。".into();
-            }));
-        }
-    };
-
-    let update_version = update.version.clone();
-    update_snapshot(&app, &state, |snapshot| {
-        snapshot.update_message = format!("正在下载版本 {update_version}…");
-    });
     let progress_app = app.clone();
-    let progress_state = Arc::clone(state.inner());
+    let progress_state = Arc::clone(state);
     let progress_version = update_version.clone();
     let finish_app = app.clone();
-    let finish_state = Arc::clone(state.inner());
+    let finish_state = Arc::clone(state);
     let mut downloaded = 0_u64;
     let bytes = match update
         .download(
@@ -461,7 +430,7 @@ async fn download_and_install_update(
         Ok(bytes) => bytes,
         Err(error) => {
             append_log(&state, &format!("Update download failed: {error}"));
-            update_snapshot(&app, &state, |snapshot| {
+            update_snapshot(app, state, |snapshot| {
                 snapshot.update_message = format!("更新下载或签名验证失败：{error}");
                 snapshot.update_available = true;
             });
@@ -469,13 +438,13 @@ async fn download_and_install_update(
         }
     };
 
-    update_snapshot(&app, &state, |snapshot| {
+    update_snapshot(app, state, |snapshot| {
         snapshot.update_message = "更新签名验证通过，正在安装…".into();
     });
-    stop_managed_child(&app, &state);
+    stop_managed_child(app, state);
     if let Err(error) = update.install(&bytes) {
         append_log(&state, &format!("Update installation failed: {error}"));
-        update_snapshot(&app, &state, |snapshot| {
+        update_snapshot(app, state, |snapshot| {
             snapshot.update_message = format!("更新安装失败：{error}");
             snapshot.update_available = true;
         });
@@ -486,23 +455,55 @@ async fn download_and_install_update(
         &state,
         &format!("Installed update {update_version}; restarting"),
     );
-    update_snapshot(&app, &state, |snapshot| {
+    update_snapshot(app, state, |snapshot| {
         snapshot.update_message = format!("版本 {update_version} 已安装，正在重启…");
     });
     app.restart()
 }
 
+async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
+    let update = match check_for_startup_update(app, state).await {
+        Ok(update) => update,
+        Err(error) => {
+            append_log(state, &format!("Startup update check failed: {error}"));
+            return;
+        }
+    };
+    let Some(update) = update else {
+        return;
+    };
+
+    let version = update.version.clone();
+    let install_now = app
+        .dialog()
+        .message(format!(
+            "发现 Codex Taskboard {version}。是否现在下载、安装并重启？"
+        ))
+        .title("Codex Taskboard 更新")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "立即更新".into(),
+            "稍后".into(),
+        ))
+        .blocking_show();
+    if !install_now {
+        append_log(state, &format!("Update {version} deferred by user"));
+        return;
+    }
+    if let Err(error) = install_update(app, state, update).await {
+        append_log(
+            state,
+            &format!("Startup update installation failed: {error}"),
+        );
+    }
+}
+
 fn main() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![
-            launcher_status,
-            restart_launcher,
-            check_for_updates,
-            download_and_install_update
-        ])
         .setup(|app| {
+            app.set_activation_policy(ActivationPolicy::Accessory);
             let home_directory = app.path().home_dir()?;
             let data_directory = home_directory.join("Library/Application Support/Codex Taskboard");
             let log_directory = home_directory.join("Library/Logs/Codex Taskboard");
@@ -521,11 +522,7 @@ fn main() {
                         snapshot.message = error;
                     });
                 }
-                if let Err(error) = check_updates(&app_handle, &state).await {
-                    update_snapshot(&app_handle, &state, |snapshot| {
-                        snapshot.update_message = format!("暂时无法检查更新：{error}");
-                    });
-                }
+                offer_startup_update(&app_handle, &state).await;
             });
             Ok(())
         })

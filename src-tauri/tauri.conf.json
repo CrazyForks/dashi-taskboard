@@ -3,26 +3,8 @@
   "productName": "Codex Taskboard",
   "version": "0.2.0",
   "identifier": "com.chuspeeism.codex-taskboard",
-  "build": {
-    "frontendDist": "ui"
-  },
   "app": {
-    "withGlobalTauri": true,
-    "windows": [
-      {
-        "label": "main",
-        "title": "Codex Taskboard",
-        "width": 460,
-        "height": 390,
-        "minWidth": 420,
-        "minHeight": 350,
-        "center": true,
-        "resizable": true
-      }
-    ],
-    "security": {
-      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost"
-    }
+    "windows": []
   },
   "bundle": {
     "active": true,

@@ -31,7 +31,7 @@ App 不修改官方客户端的 `app.asar`。App 自带 Node.js、服务、Web �
 1. 打开 [GitHub Releases](https://github.com/chuspeeism/dashi-taskboard/releases)。
 2. 下载当前已发布版本的 `.dmg`。不要使用仍为 Draft 的 Release。
 3. 打开 DMG，把 `Codex Taskboard.app` 拖到“应用程序”。
-4. 从“应用程序”打开 App。等待中文状态页显示本地服务和 Codex 面板已就绪。
+4. 从“应用程序”打开 App。启动器在后台运行，不显示主窗口或 Dock 图标。
 5. 转到新打开的官方 Codex/ChatGPT 窗口，从侧栏进入任务面板。
 
 仓库中的 `0.1.0` 手写 App 没有 Tauri Updater。首次安装 Tauri 正式版 `0.2.0` 时，必须手动下载 DMG 并替换旧 App。真实自动升级路径必须用 `0.2.0 → 0.2.1` 验证，不能用 `0.1.0 → 0.2.0` 代替。
@@ -52,7 +52,7 @@ App 不修改官方客户端的 `app.asar`。App 自带 Node.js、服务、Web �
 
 ### 自动更新
 
-App 启动后会检查 GitHub Releases，也可在中文状态页点“检查更新”。发现新版本后，点“下载并安装”。App 会下载更新包并验证 Updater 签名；验证通过后才停止任务面板服务、替换 App 并自动重启。发布版从以下地址读取 Tauri 的静态更新清单：
+App 每次启动时只检查一次 GitHub Releases。没有更新时保持静默；发现新版本时显示原生确认弹窗。用户选择“立即更新”后，App 会下载更新包并验证 Updater 签名；验证通过后才停止任务面板服务、替换 App 并自动重启。用户选择“稍后”后，本次运行不再检查。发布版从以下地址读取 Tauri 的静态更新清单：
 
 ```text
 https://github.com/chuspeeism/dashi-taskboard/releases/latest/download/latest.json
@@ -152,9 +152,9 @@ npm start
 - `latest.json` 的版本与标签一致，并包含 `darwin-aarch64` 和 `darwin-x86_64`；两者都指向本次 universal `.app.tar.gz`。
 - 在 Intel Mac 和 Apple Silicon Mac 上都能安装 DMG。
 - `codesign --verify --deep --strict`、`spctl --assess` 和 `xcrun stapler validate` 均通过。
-- 首次启动显示中文状态，能启动本地服务、打开官方客户端并注入任务面板。
+- 启动器没有主窗口或 Dock 图标，能启动本地服务、打开官方客户端并注入任务面板。
 - 新建或修改任务后，重启 App，数据和附件仍存在。
-- 手动“检查更新”能读取 `latest.json`。首个真实升级验证使用 `0.2.0 → 0.2.1`。
+- 启动时能读取 `latest.json`；没有更新时静默，有更新时只显示一次确认弹窗。首个真实升级验证使用 `0.2.0 → 0.2.1`。
 
 如果 Draft 检查失败，不发布它。修复代码并走新 PR，再用新的补丁版本标签创建 Draft。已发布版本回滚时，只替换 App；保留 Application Support 数据，并发布更高版本号的修复版本。
 
