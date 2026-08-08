@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, readFile } from "node:fs/promises";
 import http from "node:http";
-import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { chromium } from "playwright-core";
 
 const execFileAsync = promisify(execFile);
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -173,7 +173,8 @@ function fixtureHtml(origin) {
     </script>
     <script>eval(atob(${JSON.stringify(encodedSource)}));</script>
     <script>
-      (async () => {
+      let heartbeatTimer = null;
+      window.__startCodexTaskboardRegression = async () => {
         const publishHeartbeat = () => window.postMessage({
             type: "__codexTaskboardHostHeartbeatV1",
             capability: "fullheight-host-capability",
@@ -181,26 +182,22 @@ function fixtureHtml(origin) {
             startupToken: "fullheight-startup",
           }, window.location.origin);
         publishHeartbeat();
-        const heartbeatTimer = setInterval(publishHeartbeat, 500);
+        heartbeatTimer = setInterval(publishHeartbeat, 500);
         await new Promise((resolve) => setTimeout(resolve, 0));
         const entry = document.getElementById("codex-taskboard-entry");
         const panel = document.querySelector("[data-browser-sidebar-webview]");
-        const panelVisibleBefore = getComputedStyle(panel).visibility !== "hidden";
+        window.__panelVisibleBefore = getComputedStyle(panel).visibility !== "hidden";
         entry?.click();
+        window.__entryClicked = true;
+      };
 
-        for (let attempt = 0; attempt < 500; attempt += 1) {
-          const frame = document.getElementById("codex-taskboard-frame");
-          if (frame && window.__externalOpenUrl && window.__hostileNavigationLoaded) break;
-          await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-        await new Promise((resolve) => setTimeout(resolve, 250));
-
+      window.__collectCodexTaskboardRegressionResult = () => {
         const page = document.getElementById("codex-taskboard-page");
         const frame = document.getElementById("codex-taskboard-frame");
         const surface = document.getElementById("surface");
         const conversation = document.getElementById("conversation");
         const result = {
-          panelVisibleBefore,
+          panelVisibleBefore: window.__panelVisibleBefore,
           browserPanelClosed: window.__browserPanelClosed,
           conversationTop: conversation.getBoundingClientRect().top,
           pageMounted: page?.parentElement === surface,
@@ -220,7 +217,8 @@ function fixtureHtml(origin) {
         document.getElementById("result").textContent = btoa(JSON.stringify(result));
         clearInterval(heartbeatTimer);
         window.__codexTaskboardInjection__?.destroy();
-      })();
+        return result;
+      };
     </script>
   </body>
 </html>`;
@@ -275,35 +273,96 @@ test("Taskboard fills the workspace, opens HTTPS links and revokes hostile ifram
     server.closeAllConnections();
   }));
 
-  const profile = await mkdtemp(path.join(os.tmpdir(), "taskboard-fullheight-chrome-"));
-  t.after(() => rm(profile, { recursive: true, force: true }));
   const url = `http://127.0.0.1:${server.address().port}/fixture`;
-  let stdout;
-  try {
-    ({ stdout } = await execFileAsync(chrome, [
-      "--headless=new",
-      "--disable-gpu",
-      "--no-sandbox",
-      `--user-data-dir=${profile}`,
-      "--virtual-time-budget=12000",
-      "--dump-dom",
-      url,
-    ], { maxBuffer: 5 * 1024 * 1024, timeout: 20_000 }));
-  } catch (error) {
-    if (!String(error?.stdout ?? "").trim()) {
-      t.skip("Chrome or Chromium cannot run headless dump-dom in this environment");
-      return;
+  const browser = await chromium.launch({
+    executablePath: chrome,
+    headless: true,
+    args: ["--no-sandbox"],
+  });
+  t.after(() => browser.close());
+
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+  const page = await context.newPage();
+  const stageTrace = [];
+  const startedAt = Date.now();
+  const record = (stage, detail = {}) => {
+    stageTrace.push({ stage, elapsedMs: Date.now() - startedAt, ...detail });
+  };
+  page.on("console", (message) => record("console", {
+    type: message.type(),
+    text: message.text(),
+  }));
+  page.on("pageerror", (error) => record("pageerror", { message: error.message }));
+  page.on("requestfailed", (request) => record("requestfailed", {
+    url: request.url(),
+    failure: request.failure()?.errorText,
+  }));
+
+  const waitForStage = async (stage, predicate) => {
+    try {
+      await page.waitForFunction(predicate, undefined, { timeout: 10_000, polling: 50 });
+      record(stage);
+    } catch (error) {
+      record(`${stage}:timeout`);
+      throw error;
     }
+  };
+  const traceFile = process.env.TASKBOARD_INJECTION_TRACE_FILE;
+  let tracing = false;
+  let traceSaved = false;
+  let result;
+  try {
+    await context.tracing.start({ snapshots: true, sources: true });
+    tracing = true;
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
+    record("domcontentloaded");
+    await waitForStage("entry-mounted", () => Boolean(
+      document.getElementById("codex-taskboard-entry")
+      && window.__startCodexTaskboardRegression,
+    ));
+    await page.evaluate(() => window.__startCodexTaskboardRegression());
+    await waitForStage("entry-clicked", () => window.__entryClicked === true);
+    await waitForStage("frame-awaiting-challenge", () => window.__frameMessages.some(
+      (message) => message.type === "taskboard:frame-awaiting-challenge",
+    ));
+    await waitForStage("frame-ready", () => window.__frameMessages.some(
+      (message) => message.type === "taskboard:ready",
+    ));
+    await waitForStage("external-open-requested", () => (
+      window.__externalOpenUrl === "https://example.com/review"
+    ));
+    await waitForStage("hostile-navigation-revoked", () => {
+      const frame = document.getElementById("codex-taskboard-frame");
+      const status = document.getElementById("codex-taskboard-status");
+      return window.__hostileNavigationLoaded === true
+        && frame?.hidden === true
+        && status?.hidden === false;
+    });
+    result = await page.evaluate(() => window.__collectCodexTaskboardRegressionResult());
+    record("result-collected");
+  } catch (error) {
+    const state = await page.evaluate(() => ({
+      entryClicked: window.__entryClicked,
+      frameMessages: window.__frameMessages,
+      externalOpenUrl: window.__externalOpenUrl,
+      hostileNavigationLoaded: window.__hostileNavigationLoaded,
+      injectionError: window.__injectionError,
+      frameHidden: document.getElementById("codex-taskboard-frame")?.hidden,
+      statusHidden: document.getElementById("codex-taskboard-status")?.hidden,
+    })).catch((snapshotError) => ({ snapshotError: snapshotError.message }));
+    if (traceFile) {
+      await mkdir(path.dirname(traceFile), { recursive: true });
+      await context.tracing.stop({ path: traceFile });
+      tracing = false;
+      traceSaved = true;
+    }
+    error.message += `\nProtocol trace: ${JSON.stringify(stageTrace)}\nPage state: ${JSON.stringify(state)}`;
+    if (traceSaved) error.message += `\nPlaywright trace: ${traceFile}`;
     throw error;
-  }
-  if (!stdout.trim()) {
-    t.skip("Chrome or Chromium cannot run headless dump-dom in this environment");
-    return;
+  } finally {
+    if (tracing) await context.tracing.stop();
   }
 
-  const encodedResult = stdout.match(/<output id="result">([^<]+)<\/output>/)?.[1];
-  assert.ok(encodedResult, "fixture did not report an injection result");
-  const result = JSON.parse(Buffer.from(encodedResult, "base64").toString("utf8"));
   assert.deepEqual(result, {
     panelVisibleBefore: true,
     browserPanelClosed: true,
