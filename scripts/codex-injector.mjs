@@ -75,6 +75,7 @@ const hostStartupTokenName = "__codexTaskboardHostStartupTokenV1";
 const hostCapability = randomUUID();
 const injectionSourceHashName = "__CODEX_TASKBOARD_SOURCE_HASH__";
 const injectionScriptIdentifierName = "__CODEX_TASKBOARD_SCRIPT_IDENTIFIER__";
+const storageFlushTimeoutMs = 3_000;
 const codexAutomationMethods = new Set([
   "list-automations",
   "automation-create",
@@ -1255,6 +1256,30 @@ async function evaluateInjectionSource(cdp, source) {
   }
 }
 
+async function stopInjectedTaskboard(cdp) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Timed out flushing Taskboard storage")), storageFlushTimeoutMs);
+  });
+  try {
+    const evaluation = await Promise.race([
+      cdp.send("Runtime.evaluate", {
+        expression: `window.__codexTaskboardInjection__?.destroy?.()`,
+        awaitPromise: true,
+        returnByValue: true,
+      }),
+      timeout,
+    ]);
+    if (evaluation.exceptionDetails) {
+      throw new Error(
+        evaluation.exceptionDetails.exception?.description || "Taskboard storage flush failed",
+      );
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function publishInjectionScriptIdentifier(cdp, scriptIdentifier) {
   await cdp.send("Runtime.evaluate", {
     expression: `window[${JSON.stringify(injectionScriptIdentifierName)}] = ${JSON.stringify(scriptIdentifier)}`,
@@ -1280,8 +1305,10 @@ async function injectTarget(
   supervisor,
   attachExisting,
   startupToken,
+  inFlightConnections,
 ) {
   const cdp = await runtime.connect(target);
+  if (keepAlive) inFlightConnections?.add(cdp);
   let retained = false;
   const hostBridge = keepAlive
     ? installTaskboardHostBinding(cdp, supervisor, startupToken)
@@ -1305,6 +1332,7 @@ async function injectTarget(
         registerCurrentSource: (currentSource) => registerInjectionSource(cdp, currentSource),
         evaluateCurrentSource: (currentSource) => evaluateInjectionSource(cdp, currentSource),
         publishRegistration: (identifier) => publishInjectionScriptIdentifier(cdp, identifier),
+        flushCurrent: () => stopInjectedTaskboard(cdp),
         reopen: () => cdp.send("Runtime.evaluate", {
           expression: "window.__codexTaskboardInjection__?.open()",
           returnByValue: true,
@@ -1374,6 +1402,7 @@ async function injectTarget(
     retained = keepAlive;
     return { result, connection: retained ? cdp : null };
   } finally {
+    inFlightConnections?.delete(cdp);
     if (!retained) {
       unregisterQuotaPolicyCdp(cdp);
       cdp.close();
@@ -1392,6 +1421,8 @@ async function injectAll(
   supervisor,
   attachExisting,
   startupToken,
+  inFlightConnections,
+  shouldStop,
 ) {
   const targets = await runtime.targets();
   if (targets.length === 0) {
@@ -1423,8 +1454,17 @@ async function injectAll(
       supervisor,
       attachExisting,
       startupToken,
+      inFlightConnections,
     );
-    if (connection) injectedTargets.set(target.id, connection);
+    if (connection && shouldStop?.()) {
+      try {
+        await stopInjectedTaskboard(connection);
+      } catch (_) {}
+      unregisterQuotaPolicyCdp(connection);
+      connection.close();
+    } else if (connection) {
+      injectedTargets.set(target.id, connection);
+    }
     results.push({ targetId: target.id, title: target.title, url: target.url, ...result });
   }
   return results;
@@ -1493,16 +1533,12 @@ async function main() {
   let codexProcess = null;
   let cdpRuntime = null;
   const injectedTargets = new Map();
+  const inFlightConnections = new Set();
   let stopping = false;
   let wakeStop;
   const stopRequested = new Promise((resolve) => {
     wakeStop = resolve;
   });
-  const requestStop = () => {
-    if (stopping) return;
-    stopping = true;
-    wakeStop();
-  };
   const detached = !options.watch;
   const supervisor = createTaskboardSupervisor({
     detached,
@@ -1520,12 +1556,24 @@ async function main() {
   let cleanupPromise = null;
   const cleanup = () => {
     if (cleanupPromise) return cleanupPromise;
-    cleanupPromise = (async () => {
-      injectedTargets.forEach((connection) => {
+    const currentCleanup = (async () => {
+      const connections = new Set([
+        ...injectedTargets.values(),
+        ...inFlightConnections,
+      ]);
+      await Promise.all([...connections].map(async (connection) => {
+        try {
+          await stopInjectedTaskboard(connection);
+        } catch (error) {
+          console.error(`Taskboard storage flush before shutdown failed: ${error.message}`);
+        }
+      }));
+      connections.forEach((connection) => {
         unregisterQuotaPolicyCdp(connection);
         connection.close();
       });
       injectedTargets.clear();
+      inFlightConnections.clear();
       cdpRuntime?.close();
       cdpRuntime = null;
       const launchedCodex = codexProcess;
@@ -1534,8 +1582,23 @@ async function main() {
       await supervisor.stop();
       await removeTaskboardRuntime();
     })();
+    cleanupPromise = currentCleanup.finally(() => {
+      cleanupPromise = null;
+    });
     return cleanupPromise;
   };
+  const requestStop = () => {
+    if (stopping) return;
+    stopping = true;
+    wakeStop();
+    void cleanup().catch((error) => {
+      console.error(`Taskboard cleanup failed: ${error.message}`);
+    });
+  };
+  if (options.watch) {
+    process.once("SIGINT", requestStop);
+    process.once("SIGTERM", requestStop);
+  }
   try {
     let cdpReachable = false;
     if (!options.cdpPipe) {
@@ -1548,9 +1611,12 @@ async function main() {
         throw new Error(`Codex CDP is not listening on 127.0.0.1:${options.port}`);
       }
     }
+    if (stopping) return;
 
     await supervisor.ensure({ force: true });
+    if (stopping) return;
     await publishTaskboardRuntime();
+    if (stopping) return;
 
     if (options.cdpPipe) {
       const launched = await launchCodexWithPipe(options.appPath);
@@ -1563,8 +1629,10 @@ async function main() {
     } else {
       cdpRuntime = tcpCdpRuntime(options.port);
     }
+    if (stopping) return;
 
     const { source, sourceHash } = await currentInjectionSource();
+    if (stopping) return;
     let firstResults = [];
     try {
       firstResults = await injectAll(
@@ -1578,11 +1646,14 @@ async function main() {
         supervisor,
         options.attachExisting,
         options.startupToken,
+        inFlightConnections,
+        () => stopping,
       );
     } catch (error) {
       if (!options.watch) throw error;
       console.error(`Waiting for Codex renderer: ${error.message}`);
     }
+    if (stopping) return;
     if (firstResults.length > 0) {
       console.log(JSON.stringify({ injected: firstResults }, null, 2));
     }
@@ -1593,8 +1664,6 @@ async function main() {
       return;
     }
 
-    process.once("SIGINT", requestStop);
-    process.once("SIGTERM", requestStop);
     while (!stopping) {
       await Promise.race([
         new Promise((resolve) => setTimeout(resolve, 2_000)),
@@ -1628,6 +1697,8 @@ async function main() {
           supervisor,
           options.attachExisting,
           options.startupToken,
+          inFlightConnections,
+          () => stopping,
         );
         if (results.length > 0) {
           openPending = false;
@@ -1687,6 +1758,9 @@ async function main() {
       process.removeListener("SIGINT", requestStop);
       process.removeListener("SIGTERM", requestStop);
       await cleanup();
+      if (codexProcess || cdpRuntime || injectedTargets.size > 0 || inFlightConnections.size > 0) {
+        await cleanup();
+      }
     }
   }
 }

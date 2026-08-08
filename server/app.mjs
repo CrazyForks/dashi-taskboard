@@ -1364,7 +1364,7 @@ export function createTaskboardServer(options = {}) {
     assertAllowedKeys(body, new Set(["key", "value"]));
     const key = stringField(body.key, "key", { required: true, maxLength: 512 });
     const value = stringField(body.value, "value", { nullable: true, maxLength: 100_000 });
-    clientStorageWrite = clientStorageWrite.catch(() => {}).then(async () => {
+    const update = clientStorageWrite.then(async () => {
       const entries = await readClientStorage();
       if (value === null) delete entries[key];
       else entries[key] = value;
@@ -1375,7 +1375,8 @@ export function createTaskboardServer(options = {}) {
       await rename(temporaryPath, resolved.clientStoragePath);
       await chmod(resolved.clientStoragePath, 0o600);
     });
-    await clientStorageWrite;
+    clientStorageWrite = update.catch(() => {});
+    await update;
   }
   const cloudConfig = options.cloudConfigStore ?? createCloudConfigStore({
     configPath: resolved.cloudConfigPath,

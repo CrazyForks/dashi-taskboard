@@ -1,4 +1,4 @@
-(() => {
+(async () => {
   "use strict";
 
   const VERSION = "0.6.13";
@@ -24,6 +24,7 @@
   const HOST_CAPABILITY = window.__CODEX_TASKBOARD_HOST_CAPABILITY__;
   const REATTACH_DELAY_MS = 160;
   const FRAME_READY_TIMEOUT_MS = 12_000;
+  const FRAME_STORAGE_FLUSH_TIMEOUT_MS = 2_500;
   const HOST_REQUEST_TIMEOUT_MS = 12_000;
   const HOST_HEARTBEAT_MAX_AGE_MS = 8_000;
   const MACOS_TITLEBAR_SAFE_LEFT = 80;
@@ -51,9 +52,7 @@
     previous.refresh();
     return;
   }
-  try {
-    previous?.destroy?.();
-  } catch (_) {}
+  await previous?.destroy?.();
 
   let entry = null;
   let page = null;
@@ -69,6 +68,10 @@
   let frameChallenge = "";
   let frameReady = false;
   let frameReadyWaiters = new Set();
+  let frameStorageFlushWaiters = new Map();
+  let frameStorageFlushPromise = null;
+  let frameStorageStopping = false;
+  let frameStorageStopped = false;
   let hostRequests = new Map();
   let hostRequestSequence = 0;
   let hostHeartbeatAt = 0;
@@ -885,6 +888,7 @@
 
   function challengeFrameDocument(event) {
     if (!frame || event.currentTarget !== frame) return;
+    cancelFrameStorageFlushWaiters(new Error("任务面板页面正在重新加载"));
     frameReady = false;
     frameChallenge = crypto.randomUUID();
     if (active) showLoading();
@@ -915,6 +919,16 @@
       frameReadyWaiters.clear();
       if (active) showFrame();
       postHostContext();
+      return;
+    }
+    if (message.type === "taskboard:storage-flushed") {
+      frameStorageStopped = true;
+      const requestId = message.payload?.requestId;
+      const pending = frameStorageFlushWaiters.get(requestId);
+      if (!pending) return;
+      window.clearTimeout(pending.timer);
+      frameStorageFlushWaiters.delete(requestId);
+      pending.resolve();
       return;
     }
     if (message.type === "taskboard:drag-region") {
@@ -1013,6 +1027,10 @@
   }
 
   function showFrame() {
+    if (frameStorageStopping) {
+      showLoading();
+      return;
+    }
     if (status) status.hidden = true;
     if (frame) {
       frame.hidden = false;
@@ -1058,7 +1076,54 @@
     });
   }
 
-  function loadTaskboardFrame(cacheBust = false) {
+  function cancelFrameStorageFlushWaiters(error) {
+    frameStorageFlushWaiters.forEach(({ reject, timer }) => {
+      window.clearTimeout(timer);
+      reject(error);
+    });
+    frameStorageFlushWaiters.clear();
+    frameStorageFlushPromise = null;
+  }
+
+  function flushStorage() {
+    if (!frame?.contentWindow) return Promise.resolve();
+    if (frameStorageStopped) return Promise.resolve();
+    if (frameStorageFlushPromise) return frameStorageFlushPromise;
+
+    const targetFrame = frame;
+    const wasInert = targetFrame.inert;
+    let stopRequested = false;
+    targetFrame.inert = true;
+    const flushPromise = (async () => {
+      try {
+        if (!frameReady) await waitForFrameReady();
+        if (frame !== targetFrame || !frameChallenge) {
+          throw new Error("任务面板已更换，无法确认保存状态");
+        }
+        const requestId = crypto.randomUUID();
+        frameStorageStopping = true;
+        stopRequested = true;
+        await new Promise((resolve, reject) => {
+          const timer = window.setTimeout(() => {
+            frameStorageFlushWaiters.delete(requestId);
+            reject(new Error("任务面板保存超时"));
+          }, FRAME_STORAGE_FLUSH_TIMEOUT_MS);
+          frameStorageFlushWaiters.set(requestId, { resolve, reject, timer });
+          postToFrame({ type: "taskboard:flush-storage", payload: { requestId } });
+        });
+      } catch (error) {
+        if (!stopRequested && frame === targetFrame) targetFrame.inert = wasInert;
+        throw error;
+      }
+    })().finally(() => {
+      if (frameStorageFlushPromise === flushPromise) frameStorageFlushPromise = null;
+    });
+    frameStorageFlushPromise = flushPromise;
+    return flushPromise;
+  }
+
+  async function loadTaskboardFrame(cacheBust = false) {
+    await flushStorage();
     cancelFrameReadyWaiters(new Error("任务面板正在重新加载"));
     frame?.remove();
     frame = null;
@@ -1066,6 +1131,8 @@
     frameCapability = "";
     frameChallenge = "";
     frameReady = false;
+    frameStorageStopping = false;
+    frameStorageStopped = false;
     if (dragRegion) dragRegion.hidden = true;
     if (noDragLeft) noDragLeft.hidden = true;
     if (noDragRight) noDragRight.hidden = true;
@@ -1098,8 +1165,8 @@
     if (!frame) return false;
     const generation = ++openGeneration;
     if (active) showLoading();
-    const frameRequest = loadTaskboardFrame(true);
-    void requestHostLoadFrame(frameRequest)
+    void loadTaskboardFrame(true)
+      .then((frameRequest) => requestHostLoadFrame(frameRequest))
       .then(() => waitForFrameReady())
       .then(() => {
           if (!active || generation !== openGeneration) return;
@@ -1175,7 +1242,7 @@
   }
 
   function frameMatchesTaskboardUrl(taskboardUrl) {
-    if (!frame || !frameTaskboardUrl) return false;
+    if (!frame || !frameTaskboardUrl || frameStorageStopping) return false;
     try {
       const loadedUrl = new URL(frameTaskboardUrl);
       loadedUrl.searchParams.delete(FRAME_REFRESH_PARAM);
@@ -1234,7 +1301,7 @@
       };
       if (!frameReady || result.restarted || !frameMatchesTaskboardUrl(taskboardUrl)) {
         showLoading();
-        const frameRequest = loadTaskboardFrame();
+        const frameRequest = await loadTaskboardFrame();
         await requestHostLoadFrame(frameRequest);
         await waitForFrameReady();
       }
@@ -1405,7 +1472,9 @@
     postHostContext();
   }
 
-  function destroy() {
+  async function destroy() {
+    if (destroyed) return;
+    await flushStorage();
     if (destroyed) return;
     destroyed = true;
     if (reattachTimer !== null) window.clearTimeout(reattachTimer);
@@ -1415,6 +1484,7 @@
     observer?.disconnect();
     observer = null;
     cancelFrameReadyWaiters(new Error("任务面板已关闭"));
+    cancelFrameStorageFlushWaiters(new Error("任务面板已关闭"));
     hostRequests.forEach(({ reject, timeout }) => {
       window.clearTimeout(timeout);
       reject(new Error("任务面板已关闭"));
@@ -1455,6 +1525,7 @@
     },
     refresh,
     reloadFrame,
+    flushStorage,
     open: openTaskboard,
     close: closeTaskboard,
     destroy,

@@ -16,6 +16,11 @@ test("the macOS launcher uses one instance, serialized lifecycle changes, and a 
   assert.match(launcherSource, /"--cdp-pipe"/);
   assert.doesNotMatch(launcherSource, /cdp_port/);
   assert.doesNotMatch(launcherSource, /const LAUNCHER_PORT/);
+  const stopSource = launcherSource.slice(
+    launcherSource.indexOf("fn stop_managed_child_locked"),
+    launcherSource.indexOf("fn stop_managed_child(", launcherSource.indexOf("fn stop_managed_child_locked")),
+  );
+  assert.match(stopSource, /libc::kill\(pid as i32, libc::SIGTERM\)[\s\S]*terminate_process_group\(pid\)/);
 });
 
 test("release signing is tag-only and PR CI builds the real unsigned app bundle", () => {

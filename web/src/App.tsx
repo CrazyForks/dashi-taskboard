@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type Dispatch,
   type SetStateAction,
@@ -64,7 +65,11 @@ import { TaskContextMenu } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
 import { TaskEditor, type NewTaskEditorDraft } from "./components/TaskEditor";
 import { TaskFilterMenu } from "./components/TaskFilterMenu";
-import { taskboardStorage } from "./storage";
+import {
+  getTaskboardStorageStatus,
+  subscribeTaskboardStorageStatus,
+  taskboardStorage,
+} from "./storage";
 import {
   installEmbeddedExternalLinkHandler,
   postEmbeddedHostMessage,
@@ -561,7 +566,7 @@ function LocalRealtimeSync({
   return null;
 }
 
-export function App() {
+export function App({ onStorageFlush }: { onStorageFlush: (requestId: string) => void }) {
   const query = useMemo(() => new URL(document.baseURI).searchParams, []);
   const host = query.get("host");
   const embedded = host === "codex" || host === "workbuddy";
@@ -595,6 +600,11 @@ export function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
+  const storageStatus = useSyncExternalStore(
+    subscribeTaskboardStorageStatus,
+    getTaskboardStorageStatus,
+    getTaskboardStorageStatus,
+  );
   const [search, setSearch] = useState("");
   const [filters, setFilters] = useState(readTaskFilters);
   const [boardView, setBoardView] = useState<BoardView>(() => readProjectBoardView(initialProjectId));
@@ -1168,6 +1178,18 @@ export function App() {
         return;
       }
 
+      if (message.type === "taskboard:flush-storage") {
+        const requestId = typeof message.payload === "object"
+          && message.payload
+          && "requestId" in message.payload
+          && typeof message.payload.requestId === "string"
+          ? message.payload.requestId
+          : "";
+        if (!requestId) return;
+        onStorageFlush(requestId);
+        return;
+      }
+
       if (message.type === "taskboard:automation-response" && message.payload) {
         const payload = message.payload as Partial<AutomationHostResponse>;
         if (typeof payload.requestId !== "string") return;
@@ -1212,14 +1234,13 @@ export function App() {
     postEmbeddedHostMessage({ type: "taskboard:frame-awaiting-challenge" });
     return () => {
       window.removeEventListener("message", receiveHostMessage);
-      setEmbeddedFrameChallenge("");
       removeExternalLinkHandler();
       for (const pending of pendingAutomationRequestsRef.current.values()) {
         window.clearTimeout(pending.timeoutId);
       }
       pendingAutomationRequestsRef.current.clear();
     };
-  }, [embedded, host]);
+  }, [embedded, host, onStorageFlush]);
 
   useEffect(() => {
     if (host !== "workbuddy") return;
@@ -2263,6 +2284,18 @@ export function App() {
           <div ref={dragRegionRef} className="workspace-drag-region" aria-hidden="true" />
 
           <div className="header-actions">
+            {storageStatus !== "persisted" && (
+              <div
+                className={`storage-persistence-status is-${storageStatus}`}
+                role="status"
+                title={storageStatus === "failed"
+                  ? "本地状态尚未持久化，正在重试"
+                  : "正在持久化本地状态"}
+              >
+                <span aria-hidden="true" />
+                {storageStatus === "failed" ? "未持久化，正在重试" : "正在保存"}
+              </div>
+            )}
             {selectedProjectId && (
               <ProjectAutomationMenu
                 automation={selectedProjectAutomation}

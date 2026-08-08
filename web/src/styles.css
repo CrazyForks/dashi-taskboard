@@ -850,6 +850,34 @@ kbd {
   gap: 5px;
 }
 
+.storage-persistence-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.storage-persistence-status > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+}
+
+.storage-persistence-status.is-pending > span {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.storage-persistence-status.is-failed {
+  color: var(--status-blocked);
+}
+
+.storage-persistence-status.is-failed > span {
+  background: var(--status-blocked);
+}
+
 .compact-select select {
   height: 26px;
   max-width: 150px;

@@ -101,6 +101,10 @@ function fixtureHtml(origin) {
       window.__browserPanelClosed = false;
       window.__injectionError = null;
       window.__frameMessages = [];
+      window.__frameLoadCount = 0;
+      window.__frameRecreated = false;
+      window.__storageFlushAckBeforeReload = false;
+      window.__frameWasInertDuringFlush = false;
       window.__externalOpenUrl = null;
       window.__frameVisibleBeforeNavigation = false;
       window.__statusHiddenBeforeNavigation = false;
@@ -116,6 +120,10 @@ function fixtureHtml(origin) {
         if (typeof event.data?.type === "string" && event.data.type.startsWith("taskboard:")) {
           window.__frameMessages.push({ type: event.data.type, origin: event.origin });
         }
+        if (event.data?.type === "taskboard:storage-flushed") {
+          window.__storageFlushAckBeforeReload = true;
+          window.__frameWasInertDuringFlush = document.getElementById("codex-taskboard-frame")?.inert === true;
+        }
         if (
           event.source === window
           && event.data?.type === "__codexTaskboardHostRequestV1"
@@ -124,19 +132,27 @@ function fixtureHtml(origin) {
           const request = event.data.payload;
           if (request.action === "load-frame") {
             const frame = document.querySelector('iframe[name="' + request.frameName + '"]');
+            const frameLoadIndex = window.__frameLoadCount++;
+            if (frameLoadIndex === 0) window.__firstTaskboardFrame = frame;
+            else window.__frameRecreated = frame !== window.__firstTaskboardFrame
+              && window.__firstTaskboardFrame?.isConnected === false;
             const moduleUrl = ${JSON.stringify(`${origin}/embeddedHost.mjs`)};
             frame.srcdoc = '<a id="external-link" href="https://example.com/review" target="_blank">Review</a>'
               + '<script type="module">import * as host from ' + JSON.stringify(moduleUrl) + ';'
+              + 'const activateHostileNavigation=' + JSON.stringify(frameLoadIndex > 0) + ';'
               + 'globalThis.__CODEX_TASKBOARD_FRAME_CAPABILITY__='
               + JSON.stringify(request.frameCapability)
               + ';host.installEmbeddedExternalLinkHandler();'
               + 'let activated=false,acknowledgedChallenge="";window.addEventListener("message",function(event){'
+              + 'if(event.data?.type==="taskboard:flush-storage"){'
+              + 'host.postEmbeddedHostMessage({type:"taskboard:storage-flushed",payload:{requestId:event.data.payload?.requestId}});return;}'
               + 'if(event.data?.type!=="taskboard:frame-challenge")return;'
               + 'const challenge=event.data.payload?.challenge;if(!challenge||challenge===acknowledgedChallenge)return;'
               + 'acknowledgedChallenge=challenge;host.setEmbeddedFrameChallenge(challenge);'
               + 'host.postEmbeddedHostMessage({type:"taskboard:ready"});'
               + 'if(activated)return;activated=true;'
               + 'parent.postMessage({type:"taskboard:ready"},"*");'
+              + 'if(!activateHostileNavigation)return;'
               + 'parent.postMessage({type:"taskboard:open-thread",payload:{threadId:"forged"}},"*");'
               + 'document.getElementById("external-link").click();'
               + '});host.postEmbeddedHostMessage({type:"taskboard:frame-awaiting-challenge"});<\\/script>';
@@ -207,6 +223,10 @@ function fixtureHtml(origin) {
           frameIsolated: frame?.contentDocument === null,
           statusHidden: document.getElementById("codex-taskboard-status")?.hidden === true,
           frameMessages: window.__frameMessages,
+          frameLoadCount: window.__frameLoadCount,
+          frameRecreated: window.__frameRecreated,
+          storageFlushAckBeforeReload: window.__storageFlushAckBeforeReload,
+          frameWasInertDuringFlush: window.__frameWasInertDuringFlush,
           externalOpenUrl: window.__externalOpenUrl,
           frameVisibleBeforeNavigation: window.__frameVisibleBeforeNavigation,
           statusHiddenBeforeNavigation: window.__statusHiddenBeforeNavigation,
@@ -216,7 +236,6 @@ function fixtureHtml(origin) {
         };
         document.getElementById("result").textContent = btoa(JSON.stringify(result));
         clearInterval(heartbeatTimer);
-        window.__codexTaskboardInjection__?.destroy();
         return result;
       };
     </script>
@@ -328,6 +347,12 @@ test("Taskboard fills the workspace, opens HTTPS links and revokes hostile ifram
     await waitForStage("frame-ready", () => window.__frameMessages.some(
       (message) => message.type === "taskboard:ready",
     ));
+    await page.evaluate(() => window.__codexTaskboardInjection__?.reloadFrame());
+    record("frame-reload-requested");
+    await waitForStage("storage-flushed", () => window.__storageFlushAckBeforeReload === true);
+    await waitForStage("frame-recreated", () => (
+      window.__frameLoadCount === 2 && window.__frameRecreated === true
+    ));
     await waitForStage("external-open-requested", () => (
       window.__externalOpenUrl === "https://example.com/review"
     ));
@@ -377,9 +402,17 @@ test("Taskboard fills the workspace, opens HTTPS links and revokes hostile ifram
       { type: "taskboard:frame-awaiting-challenge", origin: "null" },
       { type: "taskboard:ready", origin: "null" },
       { type: "taskboard:ready", origin: "null" },
+      { type: "taskboard:storage-flushed", origin: "null" },
+      { type: "taskboard:frame-awaiting-challenge", origin: "null" },
+      { type: "taskboard:ready", origin: "null" },
+      { type: "taskboard:ready", origin: "null" },
       { type: "taskboard:open-thread", origin: "null" },
       { type: "taskboard:open-external", origin: "null" },
     ],
+    frameLoadCount: 2,
+    frameRecreated: true,
+    storageFlushAckBeforeReload: true,
+    frameWasInertDuringFlush: true,
     externalOpenUrl: "https://example.com/review",
     frameVisibleBeforeNavigation: true,
     statusHiddenBeforeNavigation: true,

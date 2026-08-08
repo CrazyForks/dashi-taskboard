@@ -245,6 +245,13 @@ fn stop_managed_child_locked(app: &AppHandle, state: &Arc<LauncherState>) {
     state.intentional_stop.store(true, Ordering::SeqCst);
     if let Some(pid) = state.child.lock().unwrap().take() {
         append_log(state, &format!("Stopping launcher child {pid}"));
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + STOP_TIMEOUT;
+        while unsafe { libc::kill(pid as i32, 0) == 0 } && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(100));
+        }
         terminate_process_group(pid);
         clear_pid_record(state, pid);
     }

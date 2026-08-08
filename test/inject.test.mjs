@@ -9,10 +9,11 @@ const sourceUrl = new URL("../inject/codex-taskboard.user.js", import.meta.url);
 const source = await readFile(sourceUrl, "utf8");
 const webStyles = await readFile(new URL("../web/src/styles.css", import.meta.url), "utf8");
 const webApp = await readFile(new URL("../web/src/App.tsx", import.meta.url), "utf8");
+const webMain = await readFile(new URL("../web/src/main.tsx", import.meta.url), "utf8");
 const embeddedHost = await readFile(new URL("../web/src/embeddedHost.mjs", import.meta.url), "utf8");
 
 test("injection is an idempotent IIFE guarded by its current source hash", () => {
-  assert.match(source, /^\(\(\) => \{/);
+  assert.match(source, /^\(async \(\) => \{/);
   assert.match(source, /const VERSION = "0\.6\.13"/);
   assert.match(source, /const SOURCE_HASH = window\.__CODEX_TASKBOARD_SOURCE_HASH__/);
   assert.match(source, /const SENTINEL_KEY = "__codexTaskboardInjection__"/);
@@ -134,6 +135,27 @@ test("the injected iframe can be cache-busted without reloading the Codex shell"
   assert.match(source, /function reloadFrame\(\)/);
   assert.match(source, /loadTaskboardFrame\(true\)/);
   assert.match(source, /reloadFrame,/);
+});
+
+test("iframe replacement waits for server-backed storage acknowledgement", () => {
+  const frameReplacement = source.slice(
+    source.indexOf("async function loadTaskboardFrame"),
+    source.indexOf("function reloadFrame"),
+  );
+  assert.match(frameReplacement, /await flushStorage\(\)[\s\S]*frame\?\.remove\(\)/);
+  assert.match(source, /type: "taskboard:flush-storage"/);
+  assert.match(source, /message\.type === "taskboard:storage-flushed"/);
+  assert.match(source, /flushStorage,/);
+  assert.match(webApp, /message\.type === "taskboard:flush-storage"/);
+  assert.match(webApp, /onStorageFlush\(requestId\)/);
+  assert.match(webMain, /root\.unmount\(\)[\s\S]*flushTaskboardStorage\(\)[\s\S]*type: "taskboard:storage-flushed"/);
+  assert.match(webMain, /window\.addEventListener\("pagehide"[\s\S]*flushTaskboardStorage\(\)/);
+  assert.match(source, /if \(!frameReady\) await waitForFrameReady\(\)/);
+  assert.match(source, /frameStorageStopping = true;[\s\S]*postToFrame/);
+  assert.match(source, /message\.type === "taskboard:storage-flushed"\) \{[\s\S]*frameStorageStopped = true/);
+  assert.match(source, /if \(!stopRequested && frame === targetFrame\) targetFrame\.inert = wasInert/);
+  assert.match(source, /if \(!frame \|\| !frameTaskboardUrl \|\| frameStorageStopping\) return false/);
+  assert.match(source, /async function destroy\(\) \{[\s\S]*await flushStorage\(\)[\s\S]*document\.querySelectorAll/);
 });
 
 test("reopening reuses a ready cache-busted iframe without showing the startup placeholder", () => {

@@ -90,6 +90,19 @@ test("attach reconciles the renderer against a hashed current injection source",
   assert.match(source, /Page\.addScriptToEvaluateOnNewDocument/);
   assert.match(source, /reconcileInjectionRuntime/);
   assert.match(source, /expectedSourceHash/);
+  assert.match(source, /flushCurrent: \(\) => stopInjectedTaskboard\(cdp\)/);
+  const cleanupStart = source.indexOf("const cleanup = () =>", source.indexOf("let cleanupPromise"));
+  const cleanupSource = source.slice(
+    cleanupStart,
+    source.indexOf("\n  try {\n    let cdpReachable", cleanupStart),
+  );
+  assert.match(cleanupSource, /\.\.\.inFlightConnections[\s\S]*await stopInjectedTaskboard\(connection\)[\s\S]*connection\.close\(\)/);
+  assert.match(source, /const requestStop = \(\) => \{[\s\S]*void cleanup\(\)/);
+  assert.ok(
+    source.indexOf('process.once("SIGTERM", requestStop)')
+      < source.indexOf("await supervisor.ensure({ force: true })"),
+  );
+  assert.match(source, /if \(connection && shouldStop\?\.\(\)\)[\s\S]*await stopInjectedTaskboard\(connection\)/);
 });
 
 test("the injector ignores auxiliary Codex windows", () => {
