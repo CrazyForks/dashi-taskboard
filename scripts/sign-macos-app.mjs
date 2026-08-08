@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -8,6 +9,10 @@ const scriptPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(scriptPath), "..");
 const appPath = process.argv[2] ? path.resolve(process.argv[2]) : null;
 const identity = process.env.APPLE_SIGNING_IDENTITY?.trim();
+const releasePolicy = JSON.parse(readFileSync(
+  path.join(projectRoot, "src-tauri", "release.json"),
+  "utf8",
+));
 
 if (!appPath) throw new Error("Usage: sign-macos-app.mjs <App.app>");
 if (!identity) throw new Error("APPLE_SIGNING_IDENTITY is required");
@@ -41,7 +46,7 @@ function signingDetails(targetPath) {
 
 run("/usr/bin/codesign", ["--verify", "--strict", "--verbose=2", nodePath]);
 const nodeDetails = signingDetails(nodePath);
-if (!nodeDetails.includes("TeamIdentifier=HX7739G8FX")) {
+if (!nodeDetails.includes(`TeamIdentifier=${releasePolicy.nodeTeamId}`)) {
   throw new Error("Bundled Node.js does not have the verified Node.js Foundation signature");
 }
 const nodeEntitlements = entitlements(nodePath);
@@ -82,8 +87,13 @@ run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPa
 if (Object.keys(entitlements(launcherPath)).length !== 0) {
   throw new Error("The launcher must use the empty App entitlement policy");
 }
-if (!signingDetails(nodePath).includes("TeamIdentifier=HX7739G8FX")) {
+if (!signingDetails(nodePath).includes(`TeamIdentifier=${releasePolicy.nodeTeamId}`)) {
   throw new Error("Signing the App replaced the Node.js Foundation signature");
+}
+for (const targetPath of [launcherPath, appPath]) {
+  if (!signingDetails(targetPath).includes(`TeamIdentifier=${releasePolicy.appleTeamId}`)) {
+    throw new Error(`Signed target does not use Apple Team ${releasePolicy.appleTeamId}`);
+  }
 }
 const signedNodeEntitlements = entitlements(nodePath);
 for (const entitlement of [

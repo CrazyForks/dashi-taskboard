@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  deployments: write
 
 concurrency:
   group: release-macos-${{ github.ref_name }}
@@ -17,6 +18,7 @@ jobs:
     name: Build signed universal macOS app
     runs-on: macos-latest
     timeout-minutes: 90
+    environment: macos-release
 
     steps:
       - name: Checkout
@@ -39,6 +41,7 @@ jobs:
           TAG_DELETED: ${{ github.event.deleted }}
           TAG_FORCED: ${{ github.event.forced }}
         run: |
+          set -euo pipefail
           if [[ "$TAG_CREATED" != "true" || "$TAG_DELETED" == "true" || "$TAG_FORCED" == "true" ]]; then
             echo "发布标签必须是首次创建，不能删除或强制更新。" >&2
             exit 1
@@ -51,6 +54,48 @@ jobs:
           fi
           git merge-base --is-ancestor "$TAG_COMMIT" origin/main
 
+          REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
+          if [[ -z "$REMOTE_TAG_COMMIT" ]]; then
+            REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')"
+          fi
+          if [[ "$REMOTE_TAG_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "远程发布标签与当前工作流提交不一致。" >&2
+            exit 1
+          fi
+
+          TAG_RULE_PROTECTED=false
+          while IFS= read -r RULESET_ID; do
+            RULESET="$(gh api "repos/$GITHUB_REPOSITORY/rulesets/$RULESET_ID")"
+            if jq -e '
+              .target == "tag" and
+              .enforcement == "active" and
+              ((.bypass_actors // []) | length == 0) and
+              ((.conditions.ref_name.include // []) | index("refs/tags/app-v*") != null) and
+              ((.rules | map(.type)) | index("update") != null) and
+              ((.rules | map(.type)) | index("deletion") != null)
+            ' <<< "$RULESET" >/dev/null; then
+              TAG_RULE_PROTECTED=true
+              break
+            fi
+          done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/rulesets?targets=tag&per_page=100" --jq '.[].id')
+          if [[ "$TAG_RULE_PROTECTED" != "true" ]]; then
+            echo "发布前必须启用 app-v* 标签规则：禁止更新、禁止删除，并且不能配置绕过者。" >&2
+            exit 1
+          fi
+
+          RELEASE_ENVIRONMENT="$(gh api "repos/$GITHUB_REPOSITORY/environments/macos-release")"
+          if ! jq -e '
+            (.protection_rules // [])
+            | any(
+              .type == "required_reviewers" and
+              .prevent_self_review == true and
+              ((.reviewers // []) | length > 0)
+            )
+          ' <<< "$RELEASE_ENVIRONMENT" >/dev/null; then
+            echo "macos-release 环境必须启用必需审核人，并禁止发起人自行审核。" >&2
+            exit 1
+          fi
+
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           CARGO_VERSION="$(node -e 'const fs=require("fs"); const source=fs.readFileSync("src-tauri/Cargo.toml","utf8"); console.log(source.match(/^version = "([^"]+)"/m)[1])')"
           TAURI_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
@@ -62,10 +107,50 @@ jobs:
             echo "发布标签必须与应用版本一致。" >&2
             exit 1
           fi
-          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "该标签或版本已存在 Release。" >&2
+
+          RELEASE_CHECK="$RUNNER_TEMP/release-check.json"
+          if ! RELEASE_STATUS="$(curl --silent --show-error \
+            --output "$RELEASE_CHECK" \
+            --write-out '%{http_code}' \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"; then
+            echo "无法确认 Release 是否存在。" >&2
             exit 1
           fi
+          case "$RELEASE_STATUS" in
+            404) ;;
+            200)
+              echo "该标签或版本已存在 Release。" >&2
+              exit 1
+              ;;
+            *)
+              echo "查询 Release 失败，HTTP $RELEASE_STATUS。" >&2
+              exit 1
+              ;;
+          esac
+
+          RELEASE_TAGS="$RUNNER_TEMP/release-tags.txt"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name' > "$RELEASE_TAGS"
+          PACKAGE_VERSION="$PACKAGE_VERSION" RELEASE_TAGS="$RELEASE_TAGS" node <<'NODE'
+          const fs = require("node:fs");
+          const current = process.env.PACKAGE_VERSION.split(".").map(Number);
+          const compare = (left, right) => {
+            for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+              const difference = (left[index] ?? 0) - (right[index] ?? 0);
+              if (difference !== 0) return difference;
+            }
+            return 0;
+          };
+          for (const tag of fs.readFileSync(process.env.RELEASE_TAGS, "utf8").split(/\r?\n/)) {
+            const match = /^app-v(\d+(?:\.\d+)*)$/.exec(tag);
+            if (match && compare(match[1].split(".").map(Number), current) >= 0) {
+              console.error(`已有相同或更高版本的 Release：${tag}`);
+              process.exit(1);
+            }
+          }
+          NODE
           echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
           echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> "$GITHUB_ENV"
 
@@ -194,6 +279,42 @@ jobs:
             "$BUNDLE_ROOT/release" \
             "$RELEASE_TAG"
 
+      - name: Verify signed release artifacts and immutable tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
+          APP_PATH="$BUNDLE_ROOT/macos/Codex Taskboard.app"
+          DMG_PATH="$BUNDLE_ROOT/dmg/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg"
+          RELEASE_ROOT="$BUNDLE_ROOT/release"
+          npm run app:verify-release -- "$APP_PATH" "$DMG_PATH" "$RELEASE_ROOT" "$RELEASE_TAG"
+
+          REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
+          if [[ -z "$REMOTE_TAG_COMMIT" ]]; then
+            REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')"
+          fi
+          if [[ "$REMOTE_TAG_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "构建期间远程发布标签发生变化。" >&2
+            exit 1
+          fi
+
+          RELEASE_CHECK="$RUNNER_TEMP/release-check-before-create.json"
+          if ! RELEASE_STATUS="$(curl --silent --show-error \
+            --output "$RELEASE_CHECK" \
+            --write-out '%{http_code}' \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"; then
+            echo "无法在上传前确认 Release 是否存在。" >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_STATUS" != "404" ]]; then
+            echo "上传前 Release 状态不是 404，HTTP $RELEASE_STATUS。" >&2
+            exit 1
+          fi
+
       - name: Create draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -210,6 +331,25 @@ jobs:
             "$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
             "$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" \
             "$BUNDLE_ROOT/release/latest.json"
+
+          REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
+          if [[ -z "$REMOTE_TAG_COMMIT" ]]; then
+            REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')"
+          fi
+          if [[ "$REMOTE_TAG_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "创建 Release 后远程发布标签发生变化。" >&2
+            exit 1
+          fi
+
+          RELEASE="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,targetCommitish,isDraft)"
+          if ! jq -e \
+            --arg tag "$RELEASE_TAG" \
+            --arg target "$GITHUB_SHA" \
+            '.tagName == $tag and .targetCommitish == $target and .isDraft == true' \
+            <<< "$RELEASE" >/dev/null; then
+            echo "Draft Release 的标签、目标提交或草稿状态不正确。" >&2
+            exit 1
+          fi
 
       - name: Remove temporary signing files
         if: always()

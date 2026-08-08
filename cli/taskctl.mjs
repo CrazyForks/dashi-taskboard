@@ -192,7 +192,7 @@ async function execute(parsed, overrides) {
   const api = createApiClient(overrides, {
     baseUrl: usesCompanionControl || env.CODEX_TASKBOARD_COMPANION_URL !== undefined
       ? resolveCompanionUrl(env)
-      : undefined,
+      : await resolveTaskboardBaseUrl(env, overrides),
   });
   switch (command) {
     case "project list":
@@ -309,13 +309,13 @@ function createApiClient(overrides, { baseUrl: explicitBaseUrl } = {}) {
   }
 
   const env = overrides.env ?? process.env;
-  const baseUrl = normalizeBaseUrl(explicitBaseUrl ?? env.CODEX_TASKBOARD_URL ?? DEFAULT_API_URL);
+  const baseUrl = normalizeBaseUrl(explicitBaseUrl ?? DEFAULT_API_URL);
 
   return {
     async request(method, pathname, body) {
       let response;
       try {
-        response = await fetchImplementation(new URL(pathname, `${baseUrl}/`), {
+        response = await fetchImplementation(resolveApiUrl(baseUrl, pathname), {
           method,
           headers: {
             accept: "application/json",
@@ -352,7 +352,7 @@ function createApiClient(overrides, { baseUrl: explicitBaseUrl } = {}) {
     async download(pathname) {
       let response;
       try {
-        response = await fetchImplementation(new URL(pathname, `${baseUrl}/`), {
+        response = await fetchImplementation(resolveApiUrl(baseUrl, pathname), {
           headers: {
             accept: "*/*",
             "x-taskboard-client": "taskctl",
@@ -784,6 +784,34 @@ function normalizeBaseUrl(rawUrl) {
   url.search = "";
   url.hash = "";
   return url.toString().replace(/\/$/, "");
+}
+
+function resolveApiUrl(baseUrl, pathname) {
+  return new URL(pathname.replace(/^\//, ""), `${baseUrl}/`);
+}
+
+async function resolveTaskboardBaseUrl(env, overrides) {
+  if (env.CODEX_TASKBOARD_URL !== undefined) return env.CODEX_TASKBOARD_URL;
+  const descriptorPath = env.CODEX_TASKBOARD_RUNTIME_FILE;
+  if (!descriptorPath) return DEFAULT_API_URL;
+  let descriptor;
+  try {
+    const read = overrides.readFile ?? readFile;
+    descriptor = JSON.parse(await read(descriptorPath, "utf8"));
+  } catch (error) {
+    throw new TaskctlError("Cannot read the active Taskboard launcher endpoint", {
+      code: "SERVICE_UNAVAILABLE",
+      exitCode: 3,
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (descriptor?.version !== 1 || typeof descriptor.url !== "string") {
+    throw new TaskctlError("The active Taskboard launcher endpoint is invalid", {
+      code: "INVALID_RESPONSE",
+      exitCode: 4,
+    });
+  }
+  return descriptor.url;
 }
 
 function resolveCompanionUrl(env) {

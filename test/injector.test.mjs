@@ -108,6 +108,7 @@ test("a completed web build refreshes an already-open Codex iframe", () => {
 });
 
 test("the injected iframe follows the configured local service port", () => {
-  assert.match(source, /const taskboardPageUrl = `\$\{taskboardOrigin\}\/\$\{encodeURIComponent\(taskboardInstanceToken\)\}\/\?host=codex`/);
+  assert.match(source, /const taskboardBaseUrl = `\$\{taskboardOrigin\}\/\$\{encodeURIComponent\(taskboardInstanceToken\)\}`/);
+  assert.match(source, /const taskboardPageUrl = `\$\{taskboardBaseUrl\}\/\?host=codex`/);
   assert.match(source, /window\.__CODEX_TASKBOARD_URL__ = \$\{JSON\.stringify\(taskboardPageUrl\)\}/);
 });

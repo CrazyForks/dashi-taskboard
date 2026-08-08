@@ -1,6 +1,6 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, open, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isIP } from "node:net";
 import os from "node:os";
@@ -1307,6 +1307,7 @@ export function resolveServerOptions(options = {}) {
     databasePath: options.databasePath ?? path.join(dataDirectory, "taskboard.sqlite"),
     attachmentsDirectory: options.attachmentsDirectory ?? path.join(dataDirectory, "attachments"),
     cloudConfigPath: options.cloudConfigPath ?? path.join(dataDirectory, "cloud-companion.json"),
+    clientStoragePath: options.clientStoragePath ?? path.join(dataDirectory, "client-storage.json"),
     staticDirectory: options.staticDirectory ?? path.join(PROJECT_ROOT, "dist", "web"),
     skillPath: options.skillPath ?? path.join(PROJECT_ROOT, "skills", "manage-taskboard", "SKILL.md"),
     codexExecutable: resolveCodexExecutable({ explicit: options.codexExecutable }),
@@ -1346,6 +1347,36 @@ export function createTaskboardServer(options = {}) {
   const routePrefix = resolved.instanceToken ? `/${resolved.instanceToken}` : "";
   const database = new TaskboardDatabase(resolved.databasePath);
   const events = new EventHub();
+  let clientStorageWrite = Promise.resolve();
+
+  async function readClientStorage() {
+    try {
+      const value = JSON.parse(await readFile(resolved.clientStoragePath, "utf8"));
+      return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    } catch (error) {
+      if (error.code === "ENOENT") return {};
+      throw error;
+    }
+  }
+
+  async function updateClientStorage(body) {
+    assertPlainObject(body);
+    assertAllowedKeys(body, new Set(["key", "value"]));
+    const key = stringField(body.key, "key", { required: true, maxLength: 512 });
+    const value = stringField(body.value, "value", { nullable: true, maxLength: 100_000 });
+    clientStorageWrite = clientStorageWrite.catch(() => {}).then(async () => {
+      const entries = await readClientStorage();
+      if (value === null) delete entries[key];
+      else entries[key] = value;
+      await mkdir(path.dirname(resolved.clientStoragePath), { recursive: true });
+      const temporaryPath = `${resolved.clientStoragePath}.${process.pid}.tmp`;
+      await writeFile(temporaryPath, `${JSON.stringify(entries)}\n`, { mode: 0o600 });
+      await chmod(temporaryPath, 0o600);
+      await rename(temporaryPath, resolved.clientStoragePath);
+      await chmod(resolved.clientStoragePath, 0o600);
+    });
+    await clientStorageWrite;
+  }
   const cloudConfig = options.cloudConfigStore ?? createCloudConfigStore({
     configPath: resolved.cloudConfigPath,
   });
@@ -1674,6 +1705,18 @@ export function createTaskboardServer(options = {}) {
           });
         }
         return sendJson(response, 200, { status: "ok" });
+      }
+
+      if (pathname === "/api/client-storage") {
+        if (request.method === "GET") {
+          await clientStorageWrite;
+          return sendJson(response, 200, { entries: await readClientStorage() });
+        }
+        if (request.method === "PATCH") {
+          await updateClientStorage(await readJson(request));
+          return sendEmpty(response, 204);
+        }
+        return methodNotAllowed(response, ["GET", "PATCH"]);
       }
 
       if (pathname === "/api/local/codex-thread-progress") {
@@ -2494,9 +2537,12 @@ export function createTaskboardServer(options = {}) {
     aiChat,
     server,
     options: resolved,
-    async listen({ host = "127.0.0.1", port = resolvePort() } = {}) {
+    async listen({ host = "127.0.0.1", port = resolvePort(), fd = null } = {}) {
       if (host !== "127.0.0.1" && host !== "0.0.0.0") {
         throw new Error("Taskboard server must bind to 127.0.0.1 or 0.0.0.0");
+      }
+      if (fd !== null && (!Number.isInteger(fd) || fd < 3 || fd > 255)) {
+        throw new Error("Taskboard server listen fd must be an inherited file descriptor");
       }
       await new Promise((resolve, reject) => {
         const onError = (error) => {
@@ -2509,7 +2555,8 @@ export function createTaskboardServer(options = {}) {
         };
         server.once("error", onError);
         server.once("listening", onListening);
-        server.listen(port, host);
+        if (fd === null) server.listen(port, host);
+        else server.listen({ fd });
       });
       listening = true;
       return server.address();

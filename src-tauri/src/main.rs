@@ -21,6 +21,7 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use uuid::Uuid;
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+const TASKBOARD_LISTEN_FD: i32 = 5;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +49,7 @@ struct LauncherState {
     intentional_stop: AtomicBool,
     generation: AtomicU64,
     lifecycle: Mutex<()>,
+    taskboard_listener: Mutex<Option<TcpListener>>,
     _instance_lock: File,
     data_directory: PathBuf,
     log_path: PathBuf,
@@ -75,6 +77,7 @@ impl LauncherState {
             intentional_stop: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             lifecycle: Mutex::new(()),
+            taskboard_listener: Mutex::new(None),
             _instance_lock: instance_lock,
             pid_record_path: data_directory.join("launcher-child.json"),
             data_directory,
@@ -102,13 +105,17 @@ fn acquire_instance_lock(path: &Path) -> Result<Option<File>, std::io::Error> {
     }
 }
 
-fn reserve_loopback_port() -> Result<u16, String> {
-    let taskboard = TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
-    let taskboard_port = taskboard
+fn taskboard_listener(state: &LauncherState) -> Result<(i32, u16), String> {
+    let mut listener = state.taskboard_listener.lock().unwrap();
+    if listener.is_none() {
+        *listener = Some(TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?);
+    }
+    let listener = listener.as_ref().unwrap();
+    let port = listener
         .local_addr()
         .map_err(|error| error.to_string())?
         .port();
-    Ok(taskboard_port)
+    Ok((listener.as_raw_fd(), port))
 }
 
 fn update_snapshot(
@@ -155,10 +162,6 @@ fn find_codex_app(home_directory: &Path) -> Option<PathBuf> {
     .find(|candidate| candidate.is_dir())
 }
 
-fn process_is_running(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
-}
-
 fn send_process_group_signal(pid: u32, signal: i32) {
     unsafe {
         if libc::kill(-(pid as i32), signal) != 0 {
@@ -167,12 +170,24 @@ fn send_process_group_signal(pid: u32, signal: i32) {
     }
 }
 
-fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
+fn process_group_is_running(pid: u32) -> bool {
+    unsafe { libc::kill(-(pid as i32), 0) == 0 }
+}
+
+fn wait_for_process_group_exit(pid: u32, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
-    while process_is_running(pid) && Instant::now() < deadline {
+    while process_group_is_running(pid) && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(100));
     }
-    !process_is_running(pid)
+    !process_group_is_running(pid)
+}
+
+fn terminate_process_group(pid: u32) {
+    send_process_group_signal(pid, libc::SIGTERM);
+    if !wait_for_process_group_exit(pid, STOP_TIMEOUT) {
+        send_process_group_signal(pid, libc::SIGKILL);
+        let _ = wait_for_process_group_exit(pid, Duration::from_secs(1));
+    }
 }
 
 fn process_matches_record(record: &LauncherPidRecord) -> bool {
@@ -194,11 +209,7 @@ fn stop_recorded_child(state: &LauncherState) {
         .and_then(|content| serde_json::from_str::<LauncherPidRecord>(&content).ok());
     if let Some(record) = record {
         if process_matches_record(&record) {
-            send_process_group_signal(record.pid, libc::SIGTERM);
-            if !wait_for_process_exit(record.pid, STOP_TIMEOUT) && process_matches_record(&record) {
-                send_process_group_signal(record.pid, libc::SIGKILL);
-                let _ = wait_for_process_exit(record.pid, Duration::from_secs(1));
-            }
+            terminate_process_group(record.pid);
         }
     }
     let _ = fs::remove_file(&state.pid_record_path);
@@ -234,11 +245,7 @@ fn stop_managed_child_locked(app: &AppHandle, state: &Arc<LauncherState>) {
     state.intentional_stop.store(true, Ordering::SeqCst);
     if let Some(pid) = state.child.lock().unwrap().take() {
         append_log(state, &format!("Stopping launcher child {pid}"));
-        send_process_group_signal(pid, libc::SIGTERM);
-        if !wait_for_process_exit(pid, STOP_TIMEOUT) {
-            send_process_group_signal(pid, libc::SIGKILL);
-            let _ = wait_for_process_exit(pid, Duration::from_secs(1));
-        }
+        terminate_process_group(pid);
         clear_pid_record(state, pid);
     }
     update_snapshot(app, state, |snapshot| {
@@ -318,17 +325,23 @@ fn start_launcher_locked(
         "{}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         resource_directory.join("bin").display()
     );
-    let taskboard_port = reserve_loopback_port()?;
+    let (taskboard_listener_fd, taskboard_port) = taskboard_listener(state)?;
     let instance_token = Uuid::new_v4().to_string();
     let instance_secret = Uuid::new_v4().to_string();
     let version = state.snapshot.lock().unwrap().version.clone();
     let codex_profile = state.data_directory.join("codex-profile");
-    let mut child = StdCommand::new(&node_path)
+    let mut command = StdCommand::new(&node_path);
+    command
         .arg(&injector_path)
         .args(["--launch", "--watch", "--open", "--cdp-pipe"])
         .args(["--startup-token", &instance_token, "--app-path"])
         .arg(&codex_app)
         .env("CODEX_TASKBOARD_DATA_DIR", &state.data_directory)
+        .env(
+            "CODEX_TASKBOARD_RUNTIME_FILE",
+            state.data_directory.join("launcher-runtime.json"),
+        )
+        .env("CODEX_TASKBOARD_LISTEN_FD", TASKBOARD_LISTEN_FD.to_string())
         .env("CODEX_TASKBOARD_HOST", "127.0.0.1")
         .env("CODEX_TASKBOARD_PORT", taskboard_port.to_string())
         .env("CODEX_TASKBOARD_INSTANCE_TOKEN", &instance_token)
@@ -343,9 +356,19 @@ fn start_launcher_locked(
         .current_dir(&app_root)
         .process_group(0)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| error.to_string())?;
+        .stderr(Stdio::piped());
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(taskboard_listener_fd, TASKBOARD_LISTEN_FD) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::fcntl(TASKBOARD_LISTEN_FD, libc::F_SETFD, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
     let pid = child.id();
     if let Err(error) = write_pid_record(state, pid, node_path, injector_path) {
         send_process_group_signal(pid, libc::SIGKILL);
@@ -379,6 +402,7 @@ fn start_launcher_locked(
             &event_state,
             &format!("Launcher child {pid} exited: {status:?}"),
         );
+        terminate_process_group(pid);
         if event_state.generation.load(Ordering::SeqCst) != generation {
             return;
         }

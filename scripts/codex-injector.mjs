@@ -2,7 +2,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -36,6 +36,19 @@ const injectionPath = path.join(projectRoot, "inject", "codex-taskboard.user.js"
 const taskboardDataDirectory = process.env.CODEX_TASKBOARD_DATA_DIR
   ? path.resolve(process.env.CODEX_TASKBOARD_DATA_DIR)
   : path.join(projectRoot, ".data");
+const taskboardRuntimeFile = process.env.CODEX_TASKBOARD_RUNTIME_FILE
+  ? path.resolve(process.env.CODEX_TASKBOARD_RUNTIME_FILE)
+  : null;
+const taskboardListenFd = process.env.CODEX_TASKBOARD_LISTEN_FD === undefined
+  ? null
+  : Number(process.env.CODEX_TASKBOARD_LISTEN_FD);
+if (taskboardListenFd !== null && (
+  !Number.isInteger(taskboardListenFd)
+  || taskboardListenFd < 3
+  || taskboardListenFd > 255
+)) {
+  throw new Error("CODEX_TASKBOARD_LISTEN_FD must be an inherited file descriptor");
+}
 const automationPoliciesPath = path.join(
   taskboardDataDirectory,
   "codex-automation-policies.json",
@@ -52,7 +65,8 @@ const taskboardVersion = process.env.CODEX_TASKBOARD_VERSION?.trim() || "develop
 process.env.CODEX_TASKBOARD_VERSION = taskboardVersion;
 const taskboardOrigin = `http://127.0.0.1:${resolvePort()}`;
 const taskboardHealthUrl = `${taskboardOrigin}/health`;
-const taskboardPageUrl = `${taskboardOrigin}/${encodeURIComponent(taskboardInstanceToken)}/?host=codex`;
+const taskboardBaseUrl = `${taskboardOrigin}/${encodeURIComponent(taskboardInstanceToken)}`;
+const taskboardPageUrl = `${taskboardBaseUrl}/?host=codex`;
 const hostBindingName = "__codexTaskboardHostV1";
 const hostRequestMessage = "__codexTaskboardHostRequestV1";
 const hostResponseMessage = "__codexTaskboardHostResponseV1";
@@ -70,9 +84,11 @@ let codexAutomationRequestSequence = 0;
 const quotaPolicyTimers = new Map();
 const quotaPolicyRecords = new Map();
 const quotaPolicyQueues = new Map();
+const quotaPolicyCdps = new Set();
+const restoredQuotaPolicyCdps = new WeakSet();
+const quotaPolicyRestorePromises = new WeakMap();
 let quotaPoliciesLoadPromise = null;
 let quotaPoliciesWritePromise = Promise.resolve();
-let quotaPoliciesRestored = false;
 
 function parseArgs(argv) {
   const options = {
@@ -180,11 +196,43 @@ async function waitUntilTaskboardReachable(timeoutMs) {
 }
 
 function startTaskboard({ detached }) {
+  const stdio = taskboardListenFd === null
+    ? (detached ? "ignore" : "inherit")
+    : Array.from(
+      { length: taskboardListenFd + 1 },
+      (_, fd) => (fd === taskboardListenFd ? "inherit" : (fd < 3 && !detached ? "inherit" : "ignore")),
+    );
   return spawn(process.execPath, [path.join(projectRoot, "server", "index.mjs")], {
     cwd: projectRoot,
     detached,
-    stdio: detached ? "ignore" : "inherit",
+    stdio,
   });
+}
+
+async function publishTaskboardRuntime() {
+  if (!taskboardRuntimeFile) return;
+  const temporaryPath = `${taskboardRuntimeFile}.${process.pid}.tmp`;
+  await mkdir(path.dirname(taskboardRuntimeFile), { recursive: true });
+  await writeFile(
+    temporaryPath,
+    `${JSON.stringify({ version: 1, pid: process.pid, url: taskboardBaseUrl })}\n`,
+    { mode: 0o600 },
+  );
+  await chmod(temporaryPath, 0o600);
+  await rename(temporaryPath, taskboardRuntimeFile);
+  await chmod(taskboardRuntimeFile, 0o600);
+}
+
+async function removeTaskboardRuntime() {
+  if (!taskboardRuntimeFile) return;
+  try {
+    const descriptor = JSON.parse(await readFile(taskboardRuntimeFile, "utf8"));
+    if (descriptor.pid === process.pid && descriptor.url === taskboardBaseUrl) {
+      await unlink(taskboardRuntimeFile);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
 }
 
 function codexExecutablePath(appPath) {
@@ -825,7 +873,25 @@ function persistQuotaPolicies() {
   return quotaPoliciesWritePromise;
 }
 
-function scheduleQuotaPolicyCheck(record, cdp, result) {
+function registerQuotaPolicyCdp(cdp) {
+  quotaPolicyCdps.delete(cdp);
+  quotaPolicyCdps.add(cdp);
+}
+
+function unregisterQuotaPolicyCdp(cdp) {
+  quotaPolicyCdps.delete(cdp);
+}
+
+function currentQuotaPolicyCdp() {
+  const candidates = [...quotaPolicyCdps].reverse();
+  for (const cdp of candidates) {
+    if (!cdp.closed) return cdp;
+    quotaPolicyCdps.delete(cdp);
+  }
+  throw new Error("No live Codex renderer is available for quota automation");
+}
+
+function scheduleQuotaPolicyCheck(record, result) {
   const { request, version } = record;
   const key = request.taskboardProjectId;
   const previous = quotaPolicyTimers.get(key);
@@ -844,12 +910,12 @@ function scheduleQuotaPolicyCheck(record, cdp, result) {
   const timer = setTimeout(async () => {
     if (quotaPolicyRecords.get(key)?.version !== version) return;
     try {
-      await enqueueCurrentQuotaPolicy(key, cdp);
+      await enqueueCurrentQuotaPolicy(key);
     } catch (error) {
       console.error(`Taskboard quota policy check failed: ${error.message}`);
       const current = quotaPolicyRecords.get(key);
       if (current?.version === version) {
-        scheduleQuotaPolicyCheck(current, cdp, { quota: { state: "unknown" } });
+        scheduleQuotaPolicyCheck(current, { quota: { state: "unknown" } });
       }
     }
   }, Math.min(nextRunDelay, resetDelay));
@@ -857,7 +923,7 @@ function scheduleQuotaPolicyCheck(record, cdp, result) {
   quotaPolicyTimers.set(key, timer);
 }
 
-function enqueueQuotaPolicyMutation(record, cdp, rpc) {
+function enqueueQuotaPolicyMutation(record, rpc) {
   const key = record.request.taskboardProjectId;
   const previous = quotaPolicyQueues.get(key) ?? Promise.resolve();
   const run = previous
@@ -875,7 +941,7 @@ function enqueueQuotaPolicyMutation(record, cdp, rpc) {
         current.request = { ...current.request, automationId: result.item.id };
         await persistQuotaPolicies();
       }
-      scheduleQuotaPolicyCheck(current, cdp, result);
+      scheduleQuotaPolicyCheck(current, result);
       return result;
     });
   const tracked = run.finally(() => {
@@ -885,7 +951,7 @@ function enqueueQuotaPolicyMutation(record, cdp, rpc) {
   return tracked;
 }
 
-async function updateAndApplyQuotaPolicy(request, cdp, rpc) {
+async function updateAndApplyQuotaPolicy(request, rpc) {
   await ensureQuotaPoliciesLoaded();
   const previous = quotaPolicyRecords.get(request.taskboardProjectId);
   const record = {
@@ -895,7 +961,7 @@ async function updateAndApplyQuotaPolicy(request, cdp, rpc) {
   quotaPolicyRecords.set(request.taskboardProjectId, record);
   try {
     await persistQuotaPolicies();
-    return await enqueueQuotaPolicyMutation(record, cdp, rpc);
+    return await enqueueQuotaPolicyMutation(record, rpc);
   } catch (error) {
     if (quotaPolicyRecords.get(request.taskboardProjectId)?.version === record.version) {
       if (previous) quotaPolicyRecords.set(request.taskboardProjectId, previous);
@@ -912,27 +978,40 @@ async function readStoredAutomationPolicy(projectId) {
   return record ? storedAutomationPolicy(record.request) : null;
 }
 
-async function enqueueCurrentQuotaPolicy(projectId, cdp) {
+async function enqueueCurrentQuotaPolicy(projectId) {
   await ensureQuotaPoliciesLoaded();
   const record = quotaPolicyRecords.get(projectId);
   if (!record) return { stale: true };
   return enqueueQuotaPolicyMutation(
     record,
-    cdp,
-    (method, body) => requestCodexAutomationViaCdp(cdp, undefined, method, body),
+    (method, body) => requestCodexAutomationViaCdp(
+      currentQuotaPolicyCdp(),
+      undefined,
+      method,
+      body,
+    ),
   );
 }
 
 async function restoreQuotaPolicies(cdp) {
-  if (quotaPoliciesRestored) return;
-  quotaPoliciesRestored = true;
-  await ensureQuotaPoliciesLoaded();
-  for (const [projectId, record] of quotaPolicyRecords) {
-    if (record.request.enabledByUser && record.request.quotaAware) {
-      void enqueueCurrentQuotaPolicy(projectId, cdp).catch((error) => {
-        console.error(`Taskboard quota policy restore failed: ${error.message}`);
-      });
+  registerQuotaPolicyCdp(cdp);
+  if (restoredQuotaPolicyCdps.has(cdp)) return;
+  const pending = quotaPolicyRestorePromises.get(cdp);
+  if (pending) return pending;
+  const restoring = (async () => {
+    await ensureQuotaPoliciesLoaded();
+    for (const [projectId, record] of quotaPolicyRecords) {
+      if (record.request.enabledByUser && record.request.quotaAware) {
+        await enqueueCurrentQuotaPolicy(projectId);
+      }
     }
+    restoredQuotaPolicyCdps.add(cdp);
+  })();
+  quotaPolicyRestorePromises.set(cdp, restoring);
+  try {
+    await restoring;
+  } finally {
+    quotaPolicyRestorePromises.delete(cdp);
   }
 }
 
@@ -1027,7 +1106,7 @@ function installTaskboardHostBinding(cdp, supervisor, startupToken) {
             body,
           );
           const result = request.operation === "apply-policy"
-            ? await updateAndApplyQuotaPolicy(request, cdp, rpc)
+            ? await updateAndApplyQuotaPolicy(request, rpc)
             : await reconcileTaskboardAutomation(request, rpc);
           if (request.operation === "list") {
             const policy = await readStoredAutomationPolicy(request.taskboardProjectId);
@@ -1272,7 +1351,10 @@ async function injectTarget(
     retained = keepAlive;
     return { result, connection: retained ? cdp : null };
   } finally {
-    if (!retained) cdp.close();
+    if (!retained) {
+      unregisterQuotaPolicyCdp(cdp);
+      cdp.close();
+    }
   }
 }
 
@@ -1297,6 +1379,7 @@ async function injectAll(
   const activeIds = new Set(targets.map((target) => target.id));
   for (const [id, connection] of injectedTargets) {
     if (!activeIds.has(id) || connection.closed) {
+      unregisterQuotaPolicyCdp(connection);
       connection.close();
       injectedTargets.delete(id);
     }
@@ -1386,6 +1469,17 @@ async function main() {
 
   let codexProcess = null;
   let cdpRuntime = null;
+  const injectedTargets = new Map();
+  let stopping = false;
+  let wakeStop;
+  const stopRequested = new Promise((resolve) => {
+    wakeStop = resolve;
+  });
+  const requestStop = () => {
+    if (stopping) return;
+    stopping = true;
+    wakeStop();
+  };
   const detached = !options.watch;
   const supervisor = createTaskboardSupervisor({
     detached,
@@ -1400,6 +1494,45 @@ async function main() {
     },
   });
 
+  let cleanupPromise = null;
+  const cleanup = () => {
+    if (cleanupPromise) return cleanupPromise;
+    cleanupPromise = (async () => {
+      injectedTargets.forEach((connection) => {
+        unregisterQuotaPolicyCdp(connection);
+        connection.close();
+      });
+      injectedTargets.clear();
+      cdpRuntime?.close();
+      cdpRuntime = null;
+      const launchedCodex = codexProcess;
+      codexProcess = null;
+      if (
+        launchedCodex
+        && launchedCodex.exitCode === null
+        && launchedCodex.signalCode === null
+      ) {
+        const codexExitPromise = new Promise((resolve) => {
+          launchedCodex.once("exit", () => resolve(true));
+        });
+        launchedCodex.kill("SIGTERM");
+        const codexExited = await Promise.race([
+          codexExitPromise,
+          new Promise((resolve) => setTimeout(() => resolve(false), 5_000)),
+        ]);
+        if (!codexExited && launchedCodex.exitCode === null) {
+          launchedCodex.kill("SIGKILL");
+          await Promise.race([
+            codexExitPromise,
+            new Promise((resolve) => setTimeout(resolve, 1_000)),
+          ]);
+        }
+      }
+      await supervisor.stop();
+      await removeTaskboardRuntime();
+    })();
+    return cleanupPromise;
+  };
   try {
     let cdpReachable = false;
     if (!options.cdpPipe) {
@@ -1414,6 +1547,7 @@ async function main() {
     }
 
     await supervisor.ensure({ force: true });
+    await publishTaskboardRuntime();
 
     if (options.cdpPipe) {
       const launched = await launchCodexWithPipe(options.appPath);
@@ -1428,7 +1562,6 @@ async function main() {
     }
 
     const { source, sourceHash } = await currentInjectionSource();
-    const injectedTargets = new Map();
     let firstResults = [];
     try {
       firstResults = await injectAll(
@@ -1457,44 +1590,17 @@ async function main() {
       return;
     }
 
-    let stopping = false;
-    const stop = async () => {
-      if (stopping) return;
-      stopping = true;
-      injectedTargets.forEach((connection) => connection.close());
-      cdpRuntime?.close();
-      if (
-        codexProcess
-        && codexProcess.exitCode === null
-        && codexProcess.signalCode === null
-      ) {
-        const codexExitPromise = new Promise((resolve) => {
-          codexProcess.once("exit", () => resolve(true));
-        });
-        codexProcess.kill("SIGTERM");
-        const codexExited = await Promise.race([
-          codexExitPromise,
-          new Promise((resolve) => setTimeout(() => resolve(false), 5_000)),
-        ]);
-        if (!codexExited && codexProcess.exitCode === null) {
-          codexProcess.kill("SIGKILL");
-          await Promise.race([
-            codexExitPromise,
-            new Promise((resolve) => setTimeout(resolve, 1_000)),
-          ]);
-        }
-      }
-      await supervisor.stop();
-      process.exit(0);
-    };
-    process.once("SIGINT", stop);
-    process.once("SIGTERM", stop);
-
+    process.once("SIGINT", requestStop);
+    process.once("SIGTERM", requestStop);
     while (!stopping) {
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      await Promise.race([
+        new Promise((resolve) => setTimeout(resolve, 2_000)),
+        stopRequested,
+      ]);
       if (stopping) break;
       try {
-        await supervisor.ensure();
+        const service = await supervisor.ensure();
+        if (service.restarted) await publishTaskboardRuntime();
       } catch (error) {
         console.error(`Waiting for Taskboard service: ${error.message}`);
       }
@@ -1526,7 +1632,10 @@ async function main() {
         const launchedCodexExited = codexProcess
           && (codexProcess.exitCode !== null || codexProcess.signalCode !== null);
         if (launchedCodexExited) {
-          injectedTargets.forEach((connection) => connection.close());
+          injectedTargets.forEach((connection) => {
+            unregisterQuotaPolicyCdp(connection);
+            connection.close();
+          });
           injectedTargets.clear();
           cdpRuntime?.close();
           const exitCode = codexProcess.exitCode;
@@ -1557,10 +1666,12 @@ async function main() {
         console.error(`Waiting for Codex renderer: ${error.message}`);
       }
     }
-    if (!stopping) await supervisor.stop();
-  } catch (error) {
-    await supervisor.stop();
-    throw error;
+  } finally {
+    if (options.watch) {
+      process.removeListener("SIGINT", requestStop);
+      process.removeListener("SIGTERM", requestStop);
+      await cleanup();
+    }
   }
 }
 

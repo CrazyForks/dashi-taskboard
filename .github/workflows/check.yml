@@ -30,7 +30,7 @@ jobs:
   macos-launcher:
     name: macOS launcher
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -52,3 +52,11 @@ jobs:
           --no-sign
           --config '{"bundle":{"createUpdaterArtifacts":false}}'
       - run: test -d "src-tauri/target/universal-apple-darwin/release/bundle/macos/Codex Taskboard.app"
+      - name: Verify packaged taskctl and inherited listener
+        run: >-
+          npm run app:verify-packaged-taskctl --
+          "src-tauri/target/universal-apple-darwin/release/bundle/macos/Codex Taskboard.app"
+      - name: Verify secretless App, updater, and DMG preflight
+        run: >-
+          npm run app:preflight --
+          "src-tauri/target/universal-apple-darwin/release/bundle/macos/Codex Taskboard.app"
