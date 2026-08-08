@@ -73,3 +73,5 @@ jobs:
         run: >-
           npm run app:preflight --
           "src-tauri/target/universal-apple-darwin/release/bundle/macos/Codex Taskboard.app"
+      - name: Verify real Tauri updater lifecycle
+        run: npm run app:verify-updater-lifecycle

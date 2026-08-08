@@ -106,6 +106,7 @@ function parseArgs(argv) {
     daemon: false,
     screenshot: null,
     appPath: "/Applications/ChatGPT.app",
+    updaterLifecycleTest: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -130,6 +131,7 @@ function parseArgs(argv) {
     }
     else if (arg === "--screenshot") options.screenshot = path.resolve(argv[++index]);
     else if (arg === "--app-path") options.appPath = path.resolve(argv[++index]);
+    else if (arg === "--updater-lifecycle-test") options.updaterLifecycleTest = true;
     else throw new Error(`Unknown option: ${arg}`);
   }
 
@@ -1487,7 +1489,9 @@ ${runtimeSource}`,
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   options.startupToken ??= taskboardInstanceToken;
-  process.env.CODEX_EXECUTABLE = resolveCodexExecutable({ appPath: options.appPath });
+  if (!options.updaterLifecycleTest) {
+    process.env.CODEX_EXECUTABLE = resolveCodexExecutable({ appPath: options.appPath });
+  }
   const cdpVersionUrl = `http://127.0.0.1:${options.port}/json/version`;
 
   if (options.daemon) {
@@ -1617,6 +1621,21 @@ async function main() {
     if (stopping) return;
     await publishTaskboardRuntime();
     if (stopping) return;
+
+    if (options.updaterLifecycleTest) {
+      console.log(JSON.stringify({ updaterLifecycleTest: "ready", pid: process.pid }));
+      while (!stopping) {
+        await Promise.race([
+          new Promise((resolve) => setTimeout(resolve, 2_000)),
+          stopRequested,
+        ]);
+        if (!stopping) {
+          const service = await supervisor.ensure();
+          if (service.restarted) await publishTaskboardRuntime();
+        }
+      }
+      return;
+    }
 
     if (options.cdpPipe) {
       const launched = await launchCodexWithPipe(options.appPath);

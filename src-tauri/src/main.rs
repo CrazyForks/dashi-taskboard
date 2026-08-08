@@ -50,7 +50,7 @@ struct LauncherState {
     generation: AtomicU64,
     lifecycle: Mutex<()>,
     taskboard_listener: Mutex<Option<TcpListener>>,
-    _instance_lock: File,
+    instance_lock: Mutex<Option<File>>,
     data_directory: PathBuf,
     log_path: PathBuf,
     pid_record_path: PathBuf,
@@ -78,7 +78,7 @@ impl LauncherState {
             generation: AtomicU64::new(0),
             lifecycle: Mutex::new(()),
             taskboard_listener: Mutex::new(None),
-            _instance_lock: instance_lock,
+            instance_lock: Mutex::new(Some(instance_lock)),
             pid_record_path: data_directory.join("launcher-child.json"),
             data_directory,
             log_path: log_directory.join("codex-taskboard-launcher.log"),
@@ -364,6 +364,8 @@ fn start_launcher_locked(
         .process_group(0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(feature = "updater-lifecycle-test")]
+    command.arg("--updater-lifecycle-test");
     unsafe {
         command.pre_exec(move || {
             if libc::dup2(taskboard_listener_fd, TASKBOARD_LISTEN_FD) < 0 {
@@ -606,6 +608,9 @@ async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
 
     let version = update.version.clone();
     append_log(state, &format!("Showing update prompt for {version}"));
+    #[cfg(feature = "updater-lifecycle-test")]
+    let install_now = true;
+    #[cfg(not(feature = "updater-lifecycle-test"))]
     let install_now = app
         .dialog()
         .message(format!(
@@ -627,17 +632,22 @@ async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
             state,
             &format!("Startup update installation failed: {error}"),
         );
-        let service_recovered = state.snapshot.lock().unwrap().child_pid.is_some();
-        let service_message = if service_recovered {
-            "任务面板服务已恢复。"
-        } else {
-            "任务面板服务未能恢复，请重新打开 App。"
-        };
-        show_error_dialog(
-            app,
-            "Codex Taskboard 更新失败",
-            &format!("更新未完成。{service_message}\n\n请稍后重试。详情见启动日志。\n\n{error}"),
-        );
+        #[cfg(not(feature = "updater-lifecycle-test"))]
+        {
+            let service_recovered = state.snapshot.lock().unwrap().child_pid.is_some();
+            let service_message = if service_recovered {
+                "任务面板服务已恢复。"
+            } else {
+                "任务面板服务未能恢复，请重新打开 App。"
+            };
+            show_error_dialog(
+                app,
+                "Codex Taskboard 更新失败",
+                &format!(
+                    "更新未完成。{service_message}\n\n请稍后重试。详情见启动日志。\n\n{error}"
+                ),
+            );
+        }
     }
 }
 
@@ -704,9 +714,15 @@ fn main() {
                 );
             }
         }
-        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+        tauri::RunEvent::ExitRequested { .. } => {
             if let Some(state) = app_handle.try_state::<Arc<LauncherState>>() {
                 stop_managed_child(app_handle, &state);
+            }
+        }
+        tauri::RunEvent::Exit => {
+            if let Some(state) = app_handle.try_state::<Arc<LauncherState>>() {
+                stop_managed_child(app_handle, &state);
+                drop(state.instance_lock.lock().unwrap().take());
             }
         }
         _ => {}
