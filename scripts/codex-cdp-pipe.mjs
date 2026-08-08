@@ -115,8 +115,10 @@ export class CdpPipeBrowser extends CdpEventChannel {
 
     this.output.on("data", (chunk) => this.receive(chunk));
     this.output.once("error", (error) => this.fail(error));
+    this.output.once("end", () => this.fail(new Error("CDP pipe ended")));
     this.output.once("close", () => this.fail(new Error("CDP pipe closed")));
     this.input.once("error", (error) => this.fail(error));
+    child.once("error", (error) => this.fail(error));
     child.once("exit", (code, signal) => {
       this.fail(new Error(`Codex exited (${signal || code})`));
     });
@@ -163,12 +165,7 @@ export class CdpPipeBrowser extends CdpEventChannel {
       this.pending.set(id, { resolve, reject, timeout });
       const message = sessionId ? { id, method, params, sessionId } : { id, method, params };
       this.input.write(`${JSON.stringify(message)}\0`, (error) => {
-        if (!error) return;
-        const pending = this.pending.get(id);
-        if (!pending) return;
-        clearTimeout(pending.timeout);
-        this.pending.delete(id);
-        pending.reject(error);
+        if (error) this.fail(error);
       });
     });
   }

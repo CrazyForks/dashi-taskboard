@@ -260,6 +260,28 @@ function launchCodex(appPath, port) {
   );
 }
 
+async function terminateCodex(child) {
+  if (
+    !child?.pid
+    || child.exitCode !== null
+    || child.signalCode !== null
+  ) return;
+  const exitPromise = new Promise((resolve) => {
+    child.once("exit", () => resolve(true));
+  });
+  child.kill("SIGTERM");
+  const exited = await Promise.race([
+    exitPromise,
+    new Promise((resolve) => setTimeout(() => resolve(false), 5_000)),
+  ]);
+  if (exited || child.exitCode !== null) return;
+  child.kill("SIGKILL");
+  await Promise.race([
+    exitPromise,
+    new Promise((resolve) => setTimeout(resolve, 1_000)),
+  ]);
+}
+
 async function launchCodexWithPipe(appPath) {
   const child = spawn(
     codexExecutablePath(appPath),
@@ -277,7 +299,7 @@ async function launchCodexWithPipe(appPath) {
     await browser.open();
     return { child, browser };
   } catch (error) {
-    child.kill("SIGTERM");
+    await terminateCodex(child);
     throw error;
   }
 }
@@ -434,6 +456,7 @@ function pipeCdpRuntime(browser) {
       .filter(isCodexTarget)
       .map((target) => ({ ...target, id: target.targetId })),
     connect: (target) => browser.connect(target.id),
+    isHealthy: () => !browser.closed,
     close: () => browser.close(),
   };
 }
@@ -1507,27 +1530,7 @@ async function main() {
       cdpRuntime = null;
       const launchedCodex = codexProcess;
       codexProcess = null;
-      if (
-        launchedCodex
-        && launchedCodex.exitCode === null
-        && launchedCodex.signalCode === null
-      ) {
-        const codexExitPromise = new Promise((resolve) => {
-          launchedCodex.once("exit", () => resolve(true));
-        });
-        launchedCodex.kill("SIGTERM");
-        const codexExited = await Promise.race([
-          codexExitPromise,
-          new Promise((resolve) => setTimeout(() => resolve(false), 5_000)),
-        ]);
-        if (!codexExited && launchedCodex.exitCode === null) {
-          launchedCodex.kill("SIGKILL");
-          await Promise.race([
-            codexExitPromise,
-            new Promise((resolve) => setTimeout(resolve, 1_000)),
-          ]);
-        }
-      }
+      await terminateCodex(launchedCodex);
       await supervisor.stop();
       await removeTaskboardRuntime();
     })();
@@ -1611,6 +1614,9 @@ async function main() {
         } catch (_) {}
       }
       try {
+        if (options.cdpPipe && !cdpRuntime) {
+          throw new Error("Codex CDP pipe is waiting to restart");
+        }
         const results = await injectAll(
           cdpRuntime,
           source,
@@ -1629,24 +1635,34 @@ async function main() {
         }
       } catch (error) {
         if (stopping) break;
+        const privatePipeUnavailable = options.cdpPipe
+          && (!cdpRuntime || !cdpRuntime.isHealthy());
         const launchedCodexExited = codexProcess
           && (codexProcess.exitCode !== null || codexProcess.signalCode !== null);
-        if (launchedCodexExited) {
+        if (privatePipeUnavailable || launchedCodexExited) {
           injectedTargets.forEach((connection) => {
             unregisterQuotaPolicyCdp(connection);
             connection.close();
           });
           injectedTargets.clear();
           cdpRuntime?.close();
-          const exitCode = codexProcess.exitCode;
+          if (options.cdpPipe) cdpRuntime = null;
+          const launchedCodex = codexProcess;
+          const exitCode = launchedCodex?.exitCode;
           codexProcess = null;
-          if (exitCode === 0) {
+          if (privatePipeUnavailable) {
+            await terminateCodex(launchedCodex);
+          } else if (exitCode === 0) {
             console.error(
               "Waiting for Codex after normal exit; open Codex Taskboard again to restart it.",
             );
             continue;
           }
-          console.error("Codex exited unexpectedly; restarting it for the taskboard launcher.");
+          console.error(
+            privatePipeUnavailable
+              ? "Codex CDP pipe became unhealthy; restarting Codex for the taskboard launcher."
+              : "Codex exited unexpectedly; restarting it for the taskboard launcher.",
+          );
           try {
             if (options.cdpPipe) {
               const launched = await launchCodexWithPipe(options.appPath);
