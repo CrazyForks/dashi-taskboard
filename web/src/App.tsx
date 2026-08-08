@@ -555,7 +555,7 @@ function LocalRealtimeSync({
 }
 
 export function App() {
-  const query = useMemo(() => new URLSearchParams(window.location.search), []);
+  const query = useMemo(() => new URL(document.baseURI).searchParams, []);
   const host = query.get("host");
   const embedded = host === "codex" || host === "workbuddy";
   const undoShortcut = navigator.userAgent.includes("Macintosh") ? "⌘Z" : "Ctrl+Z";

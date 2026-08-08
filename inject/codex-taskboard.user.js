@@ -60,6 +60,8 @@
   let noDragRight = null;
   let status = null;
   let frameOrigin = "";
+  let taskboardOrigin = "";
+  let frameBlobUrl = "";
   let frameReady = false;
   let frameReadyWaiters = new Set();
   let hostRequests = new Map();
@@ -822,7 +824,7 @@
   async function handleAutomationRequest(payload) {
     const requestId = typeof payload?.requestId === "string" ? payload.requestId : "";
     if (!requestId) return;
-    if (!isLocalTaskboardOrigin(frameOrigin)) {
+    if (!isLocalTaskboardOrigin(taskboardOrigin)) {
       postToFrame({
         type: "taskboard:automation-response",
         payload: { requestId, ok: false, error: "仅本地任务面板可用" },
@@ -1014,7 +1016,9 @@
   function loadTaskboardFrame(cacheBust = false) {
     cancelFrameReadyWaiters(new Error("任务面板正在重新加载"));
     frame?.remove();
+    if (frameBlobUrl) URL.revokeObjectURL(frameBlobUrl);
     frame = null;
+    frameBlobUrl = "";
     frameReady = false;
     if (dragRegion) dragRegion.hidden = true;
     if (noDragLeft) noDragLeft.hidden = true;
@@ -1024,11 +1028,31 @@
     if (cacheBust) {
       taskboardUrl.searchParams.set(FRAME_REFRESH_PARAM, Date.now().toString(36));
     }
-    frameOrigin = taskboardUrl.origin;
+    taskboardOrigin = taskboardUrl.origin;
+    frameOrigin = window.location.origin;
+    const bootstrapHtml = `<!doctype html>
+<html><head><meta charset="utf-8"></head><body><script>
+(async () => {
+  const sourceUrl = ${JSON.stringify(taskboardUrl.href)};
+  const response = await fetch(sourceUrl, { cache: "no-store" });
+  if (!response.ok) throw new Error("Taskboard HTTP " + response.status);
+  const html = await response.text();
+  const head = "<head>";
+  if (!html.includes(head)) throw new Error("Taskboard document has no head element");
+  const base = document.createElement("base");
+  base.href = sourceUrl;
+  document.open();
+  document.write(html.replace(head, head + base.outerHTML));
+  document.close();
+})().catch((error) => {
+  document.body.textContent = error instanceof Error ? error.message : "任务面板加载失败";
+});
+</script></body></html>`;
     const nextFrame = document.createElement("iframe");
     nextFrame.id = FRAME_ID;
     nextFrame.hidden = true;
-    nextFrame.src = taskboardUrl.href;
+    frameBlobUrl = URL.createObjectURL(new Blob([bootstrapHtml], { type: "text/html" }));
+    nextFrame.src = frameBlobUrl;
     nextFrame.title = "任务面板";
     nextFrame.referrerPolicy = "no-referrer";
     nextFrame.setAttribute("allow", "clipboard-read; clipboard-write");
@@ -1361,6 +1385,9 @@
     noDragRight = null;
     status = null;
     frameOrigin = "";
+    taskboardOrigin = "";
+    if (frameBlobUrl) URL.revokeObjectURL(frameBlobUrl);
+    frameBlobUrl = "";
     if (window[SENTINEL_KEY] === api) delete window[SENTINEL_KEY];
   }
 

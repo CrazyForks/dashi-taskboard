@@ -1569,6 +1569,22 @@ export function createTaskboardServer(options = {}) {
     response.setHeader("referrer-policy", "no-referrer");
     try {
       assertTrustedNetworkRequest(request);
+      const origin = request.headers.origin;
+      if (TRUSTED_EMBED_ORIGINS.has(origin)) {
+        response.setHeader("access-control-allow-origin", origin);
+        response.setHeader("access-control-allow-methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS");
+        response.setHeader(
+          "access-control-allow-headers",
+          request.headers["access-control-request-headers"] ?? "content-type",
+        );
+        response.setHeader("access-control-allow-private-network", "true");
+        response.setHeader("vary", "origin");
+        if (request.method === "OPTIONS") {
+          response.writeHead(204);
+          response.end();
+          return;
+        }
+      }
       const url = new URL(request.url, "http://127.0.0.1");
       const pathname = url.pathname;
       const isLocalAiRoute = pathname === "/api/local/ai" || pathname.startsWith("/api/local/ai/");
