@@ -1057,9 +1057,10 @@ async function injectTarget(
     cdp.on("Page.loadEventFired", () => (
       publishInjectionScriptIdentifier(cdp, scriptIdentifier)
     ));
-    const reloaded = cdp.waitFor("Page.loadEventFired", 15_000);
-    await cdp.send("Page.reload");
-    await reloaded;
+    await Promise.all([
+      cdp.waitFor("Page.loadEventFired", 15_000),
+      cdp.send("Page.reload"),
+    ]);
     await cdp.send("Page.setBypassCSP", { enabled: true });
     await evaluateInjectionSource(cdp, source);
     await publishInjectionScriptIdentifier(cdp, scriptIdentifier);
