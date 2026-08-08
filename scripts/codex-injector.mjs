@@ -239,10 +239,23 @@ class CdpConnection {
 
   async open() {
     await new Promise((resolve, reject) => {
-      this.socket.addEventListener("open", resolve, { once: true });
-      this.socket.addEventListener("error", () => reject(new Error("CDP WebSocket connection failed")), {
-        once: true,
-      });
+      const cleanup = () => {
+        this.socket.removeEventListener("open", handleOpen);
+        this.socket.removeEventListener("error", handleFailure);
+        this.socket.removeEventListener("close", handleFailure);
+      };
+      const handleOpen = () => {
+        cleanup();
+        resolve();
+      };
+      const handleFailure = () => {
+        cleanup();
+        this.closed = true;
+        reject(new Error("CDP WebSocket connection failed"));
+      };
+      this.socket.addEventListener("open", handleOpen, { once: true });
+      this.socket.addEventListener("error", handleFailure, { once: true });
+      this.socket.addEventListener("close", handleFailure, { once: true });
     });
     this.socket.addEventListener("message", (event) => {
       const message = JSON.parse(String(event.data));
@@ -280,6 +293,9 @@ class CdpConnection {
   }
 
   send(method, params = {}) {
+    if (this.closed || this.socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error("CDP WebSocket closed"));
+    }
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
@@ -1211,18 +1227,24 @@ async function main() {
 
     const { source, sourceHash } = await currentInjectionSource();
     const injectedTargets = new Map();
-    const firstResults = await injectAll(
-      options.port,
-      source,
-      sourceHash,
-      options.open,
-      options.screenshot,
-      injectedTargets,
-      options.watch,
-      supervisor,
-      options.attachExisting,
-      options.startupToken,
-    );
+    let firstResults = [];
+    try {
+      firstResults = await injectAll(
+        options.port,
+        source,
+        sourceHash,
+        options.open,
+        options.screenshot,
+        injectedTargets,
+        options.watch,
+        supervisor,
+        options.attachExisting,
+        options.startupToken,
+      );
+    } catch (error) {
+      if (!options.watch) throw error;
+      console.error(`Waiting for Codex renderer: ${error.message}`);
+    }
     console.log(JSON.stringify({ injected: firstResults }, null, 2));
     let openPending = options.open && firstResults.length === 0;
 
