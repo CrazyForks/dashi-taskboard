@@ -137,7 +137,7 @@ fn process_matches_record(record: &LauncherPidRecord) -> bool {
         && command.contains(&*record.injector_path.to_string_lossy())
 }
 
-fn stop_stale_launchers(state: &LauncherState) {
+fn stop_stale_processes(state: &LauncherState) {
     let process_list = StdCommand::new("/bin/ps")
         .args(["-axo", "pid=,command="])
         .output();
@@ -152,14 +152,16 @@ fn stop_stale_launchers(state: &LauncherState) {
         let Ok(pid) = pid.parse::<u32>() else {
             continue;
         };
-        if command
+        let is_launcher = command
             .contains("/Codex Taskboard.app/Contents/Resources/app/scripts/codex-injector.mjs")
             && command.contains(" --launch ")
             && command.contains(" --watch ")
             && command.contains(" --open ")
-            && command.contains(" --port 9231")
-        {
-            append_log(state, &format!("Stopping stale launcher child {pid}"));
+            && command.contains(" --port 9231");
+        let is_service =
+            command.contains("/Codex Taskboard.app/Contents/Resources/app/server/index.mjs");
+        if is_launcher || is_service {
+            append_log(state, &format!("Stopping stale taskboard process {pid}"));
             send_sigterm(pid);
             let _ = wait_for_process_exit(pid, STOP_TIMEOUT);
         }
@@ -217,6 +219,7 @@ fn stop_managed_child(app: &AppHandle, state: &Arc<LauncherState>) {
         }
         clear_pid_record(state, pid);
     }
+    stop_stale_processes(state);
     update_snapshot(app, state, |snapshot| {
         snapshot.phase = "stopped".into();
         snapshot.message = "任务面板已停止。".into();
@@ -244,7 +247,7 @@ fn start_launcher(app: &AppHandle, state: &Arc<LauncherState>) -> Result<Launche
         .parent()
         .ok_or_else(|| "无法定位 App 可执行文件目录".to_string())?
         .join("node");
-    stop_stale_launchers(state);
+    stop_stale_processes(state);
     stop_recorded_child(state);
     state.intentional_stop.store(false, Ordering::SeqCst);
     update_snapshot(app, state, |snapshot| {
@@ -474,6 +477,7 @@ async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
     };
 
     let version = update.version.clone();
+    append_log(state, &format!("Showing update prompt for {version}"));
     let install_now = app
         .dialog()
         .message(format!(
@@ -489,6 +493,7 @@ async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
         append_log(state, &format!("Update {version} deferred by user"));
         return;
     }
+    append_log(state, &format!("Update {version} accepted by user"));
     if let Err(error) = install_update(app, state, update).await {
         append_log(
             state,
