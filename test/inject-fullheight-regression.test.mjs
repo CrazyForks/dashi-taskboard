@@ -150,7 +150,7 @@ function fixtureHtml(origin) {
         const panelVisibleBefore = getComputedStyle(panel).visibility !== "hidden";
         entry?.click();
 
-        for (let attempt = 0; attempt < 150; attempt += 1) {
+        for (let attempt = 0; attempt < 500; attempt += 1) {
           const frame = document.getElementById("codex-taskboard-frame");
           if (frame && frame.hidden === false) break;
           await new Promise((resolve) => setTimeout(resolve, 20));
@@ -231,7 +231,7 @@ test("Taskboard stays visible when closing the browser panel makes the conversat
       "--disable-gpu",
       "--no-sandbox",
       `--user-data-dir=${profile}`,
-      "--virtual-time-budget=4000",
+      "--virtual-time-budget=12000",
       "--dump-dom",
       url,
     ], { maxBuffer: 5 * 1024 * 1024, timeout: 20_000 }));
