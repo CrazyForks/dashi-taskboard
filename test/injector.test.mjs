@@ -7,12 +7,16 @@ const runtimeSource = await readFile(
   new URL("../scripts/codex-injector-runtime.mjs", import.meta.url),
   "utf8",
 );
+const supervisorSource = await readFile(
+  new URL("../scripts/taskboard-supervisor.mjs", import.meta.url),
+  "utf8",
+);
 const packageJson = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 );
 
 test("the resident injector authenticates its launcher-managed Taskboard service", () => {
-  assert.match(source, /function createTaskboardSupervisor/);
+  assert.match(supervisorSource, /function createTaskboardSupervisor/);
   assert.match(source, /CODEX_TASKBOARD_INSTANCE_TOKEN/);
   assert.match(source, /createHmac\("sha256"/);
   assert.match(source, /x-codex-taskboard-challenge/);
@@ -20,16 +24,20 @@ test("the resident injector authenticates its launcher-managed Taskboard service
   assert.match(source, /taskboardInstanceSecret/);
   assert.match(source, /Page\.setDocumentContent/);
   assert.match(runtimeSource, /request\.action === "load-frame"/);
-  assert.match(source, /ensureInFlight/);
+  assert.match(supervisorSource, /ensureInFlight/);
+  assert.match(supervisorSource, /await terminateManagedChild\(managedChild\)/);
   assert.match(source, /await supervisor\.ensure\(\)/);
   assert.match(source, /it will be restarted automatically/);
   assert.match(source, /AbortSignal\.timeout\(1_500\)/);
+  assert.match(source, /__CODEX_TASKBOARD_FRAME_CAPABILITY__/);
+  assert.match(runtimeSource, /request\.frameCapability/);
 });
 
 test("the CDP bridge accepts service ensure and native instruction composer prefill actions", () => {
   assert.match(source, /const hostBindingName = "__codexTaskboardHostV1"/);
   assert.match(runtimeSource, /request\.action === "ensure"/);
   assert.match(runtimeSource, /request\.action === "prefill-task-composer"/);
+  assert.match(runtimeSource, /request\.action === "open-external"/);
   assert.match(runtimeSource, /request\.instruction\.length <= 1_024/);
   assert.match(source, /function prefillTaskComposerViaCdp/);
   assert.match(source, /cdp\.send\("Input\.insertText", \{ text: instruction \}\)/);
@@ -41,6 +49,7 @@ test("the CDP bridge accepts service ensure and native instruction composer pref
   assert.match(source, /hostResponseMessage/);
   assert.match(source, /if \(keepAlive\) await hostBridge\.install\(\)/);
   assert.match(source, /hostBridge\.publishHeartbeat/);
+  assert.match(source, /withoutTaskboardLauncherEnvironment\(process\.env\)/);
 });
 
 test("the CDP bridge exposes only the fixed Taskboard automation operations", () => {

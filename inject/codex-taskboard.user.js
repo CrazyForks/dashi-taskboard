@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.6.12";
+  const VERSION = "0.6.13";
   const SOURCE_HASH = window.__CODEX_TASKBOARD_SOURCE_HASH__;
   const SENTINEL_KEY = "__codexTaskboardInjection__";
   const DEFAULT_TASKBOARD_URL = "http://127.0.0.1:47823/?host=codex";
@@ -65,6 +65,8 @@
   let frameOrigin = "";
   let taskboardOrigin = "";
   let frameTaskboardUrl = "";
+  let frameCapability = "";
+  let frameChallenge = "";
   let frameReady = false;
   let frameReadyWaiters = new Set();
   let hostRequests = new Map();
@@ -647,13 +649,21 @@
     return payload;
   }
 
-  function postToFrame(message) {
-    if (!frame?.contentWindow || !frameOrigin) return;
+  function postToFrame(message, allowUnready = false) {
+    if (!frame?.contentWindow || !frameOrigin || (!allowUnready && !frameReady)) return;
     frame.contentWindow.postMessage(message, frameOrigin === "null" ? "*" : frameOrigin);
   }
 
   function dispatchHostMessage(message) {
     window.postMessage(message, window.location.origin);
+  }
+
+  function postFrameChallenge() {
+    if (!frameChallenge) return;
+    postToFrame({
+      type: "taskboard:frame-challenge",
+      payload: { challenge: frameChallenge },
+    }, true);
   }
 
   function postHostContext() {
@@ -865,11 +875,38 @@
     }
   }
 
+  function handleExternalOpen(payload) {
+    try {
+      const url = new URL(payload?.url);
+      if (url.protocol !== "https:") return;
+      void requestHost("open-external", { url: url.href }).catch(() => {});
+    } catch (_) {}
+  }
+
+  function challengeFrameDocument(event) {
+    if (!frame || event.currentTarget !== frame) return;
+    frameReady = false;
+    frameChallenge = crypto.randomUUID();
+    if (active) showLoading();
+    postFrameChallenge();
+  }
+
   function onFrameMessage(event) {
     if (!frame || event.source !== frame.contentWindow || event.origin !== frameOrigin) return;
     const message = event.data;
-    if (!message || typeof message !== "object") return;
+    if (
+      !message
+      || typeof message !== "object"
+      || !frameCapability
+      || message.capability !== frameCapability
+    ) return;
+    if (message.type === "taskboard:frame-awaiting-challenge") {
+      postFrameChallenge();
+      return;
+    }
+    if (!frameChallenge || message.challenge !== frameChallenge) return;
     if (message.type === "taskboard:ready") {
+      if (frameReady) return;
       frameReady = true;
       frameReadyWaiters.forEach(({ resolve, timer }) => {
         window.clearTimeout(timer);
@@ -894,6 +931,10 @@
     }
     if (message.type === "taskboard:automation-request") {
       void handleAutomationRequest(message.payload);
+      return;
+    }
+    if (message.type === "taskboard:open-external") {
+      handleExternalOpen(message.payload);
       return;
     }
     if (message.type === "taskboard:create-thread") void createThreadForTask(message.payload);
@@ -1022,6 +1063,8 @@
     frame?.remove();
     frame = null;
     frameTaskboardUrl = "";
+    frameCapability = "";
+    frameChallenge = "";
     frameReady = false;
     if (dragRegion) dragRegion.hidden = true;
     if (noDragLeft) noDragLeft.hidden = true;
@@ -1035,6 +1078,7 @@
     frameTaskboardUrl = taskboardUrl.href;
     frameOrigin = "null";
     const frameName = `codex-taskboard-${crypto.randomUUID()}`;
+    frameCapability = crypto.randomUUID();
     const nextFrame = document.createElement("iframe");
     nextFrame.id = FRAME_ID;
     nextFrame.name = frameName;
@@ -1044,18 +1088,18 @@
     nextFrame.title = "任务面板";
     nextFrame.referrerPolicy = "no-referrer";
     nextFrame.setAttribute("allow", "clipboard-read; clipboard-write");
-    nextFrame.addEventListener("load", postHostContext);
+    nextFrame.addEventListener("load", challengeFrameDocument);
     frame = nextFrame;
     page.appendChild(nextFrame);
-    return frameName;
+    return { frameName, frameCapability };
   }
 
   function reloadFrame() {
     if (!frame) return false;
     const generation = ++openGeneration;
     if (active) showLoading();
-    const frameName = loadTaskboardFrame(true);
-    void requestHostLoadFrame(frameName)
+    const frameRequest = loadTaskboardFrame(true);
+    void requestHostLoadFrame(frameRequest)
       .then(() => waitForFrameReady())
       .then(() => {
           if (!active || generation !== openGeneration) return;
@@ -1120,8 +1164,8 @@
     return requestHost("ensure");
   }
 
-  function requestHostLoadFrame(frameName) {
-    return requestHost("load-frame", { frameName });
+  function requestHostLoadFrame({ frameName, frameCapability: capability }) {
+    return requestHost("load-frame", { frameName, frameCapability: capability });
   }
 
   function requestHostTaskComposerPrefill({ instruction }) {
@@ -1190,8 +1234,8 @@
       };
       if (!frameReady || result.restarted || !frameMatchesTaskboardUrl(taskboardUrl)) {
         showLoading();
-        const frameName = loadTaskboardFrame();
-        await requestHostLoadFrame(frameName);
+        const frameRequest = loadTaskboardFrame();
+        await requestHostLoadFrame(frameRequest);
         await waitForFrameReady();
       }
       if (!active || generation !== openGeneration) return;

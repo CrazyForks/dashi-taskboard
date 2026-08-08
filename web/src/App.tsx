@@ -65,6 +65,11 @@ import { TaskDetail } from "./components/TaskDetail";
 import { TaskEditor, type NewTaskEditorDraft } from "./components/TaskEditor";
 import { TaskFilterMenu } from "./components/TaskFilterMenu";
 import { taskboardStorage } from "./storage";
+import {
+  installEmbeddedExternalLinkHandler,
+  postEmbeddedHostMessage,
+  setEmbeddedFrameChallenge,
+} from "./embeddedHost.mjs";
 import { buildIssueUrl, readIssueIdentifier } from "./issueRoute";
 import {
   MAIN_STATUSES,
@@ -563,6 +568,7 @@ export function App() {
   const undoShortcut = navigator.userAgent.includes("Macintosh") ? "⌘Z" : "Ctrl+Z";
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [hostContext, setHostContext] = useState<HostContext | null>(null);
+  const [embeddedFrameChallenge, setEmbeddedFrameChallengeState] = useState("");
   const [developmentScan, setDevelopmentScan] = useState<DevelopmentScan>({ workspacePath: null, contexts: [] });
   const [developmentScanLoading, setDevelopmentScanLoading] = useState(false);
   const [manageTaskboardSkillPath, setManageTaskboardSkillPath] = useState("");
@@ -875,7 +881,7 @@ export function App() {
       }, 10_000);
       pendingAutomationRequestsRef.current.set(requestId, { resolve, reject, timeoutId });
     });
-    window.parent.postMessage({
+    postEmbeddedHostMessage({
       type: "taskboard:automation-request",
       payload: {
         requestId,
@@ -892,7 +898,7 @@ export function App() {
         model: options.model,
         reasoningEffort: options.reasoningEffort,
       },
-    }, "*");
+    });
     return response;
   }, [
     automationProjectContext,
@@ -1141,10 +1147,26 @@ export function App() {
 
   useEffect(() => {
     if (!embedded || window.parent === window) return;
+    let acknowledgedFrameChallenge = "";
 
     function receiveHostMessage(event: MessageEvent) {
       if (event.source !== window.parent || !event.data || typeof event.data !== "object") return;
       const message = event.data as { type?: string; payload?: unknown; theme?: unknown };
+
+      if (message.type === "taskboard:frame-challenge") {
+        const challenge = typeof message.payload === "object"
+          && message.payload
+          && "challenge" in message.payload
+          && typeof message.payload.challenge === "string"
+          ? message.payload.challenge
+          : "";
+        if (!challenge || challenge === acknowledgedFrameChallenge) return;
+        acknowledgedFrameChallenge = challenge;
+        setEmbeddedFrameChallenge(challenge);
+        setEmbeddedFrameChallengeState(challenge);
+        postEmbeddedHostMessage({ type: "taskboard:ready" });
+        return;
+      }
 
       if (message.type === "taskboard:automation-response" && message.payload) {
         const payload = message.payload as Partial<AutomationHostResponse>;
@@ -1185,10 +1207,13 @@ export function App() {
       if (host === "codex") void publishHostRuntime(payload);
     }
 
+    const removeExternalLinkHandler = installEmbeddedExternalLinkHandler();
     window.addEventListener("message", receiveHostMessage);
-    window.parent.postMessage({ type: "taskboard:ready" }, "*");
+    postEmbeddedHostMessage({ type: "taskboard:frame-awaiting-challenge" });
     return () => {
       window.removeEventListener("message", receiveHostMessage);
+      setEmbeddedFrameChallenge("");
+      removeExternalLinkHandler();
       for (const pending of pendingAutomationRequestsRef.current.values()) {
         window.clearTimeout(pending.timeoutId);
       }
@@ -1218,10 +1243,10 @@ export function App() {
     const region = dragRegionRef.current;
     const publish = () => {
       const rect = region.getBoundingClientRect();
-      window.parent.postMessage({
+      postEmbeddedHostMessage({
         type: "taskboard:drag-region",
         payload: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-      }, "*");
+      });
     };
     const observer = new ResizeObserver(publish);
     observer.observe(region);
@@ -1230,9 +1255,9 @@ export function App() {
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", publish);
-      window.parent.postMessage({ type: "taskboard:drag-region", payload: null }, "*");
+      postEmbeddedHostMessage({ type: "taskboard:drag-region", payload: null });
     };
-  }, [detailTaskId, embedded, selectedProjectId]);
+  }, [detailTaskId, embedded, embeddedFrameChallenge, selectedProjectId]);
 
   const loadProjectList = useCallback(async (signal?: AbortSignal) => {
     setLoadError(null);
@@ -1908,7 +1933,7 @@ export function App() {
 
   function openThread(threadId: string) {
     if (embedded && window.parent !== window) {
-      window.parent.postMessage({ type: "taskboard:open-thread", payload: { threadId } }, "*");
+      postEmbeddedHostMessage({ type: "taskboard:open-thread", payload: { threadId } });
       return;
     }
 
@@ -1928,7 +1953,7 @@ export function App() {
 
   function expandCodexSidebar() {
     if (!embedded || window.parent === window) return;
-    window.parent.postMessage({ type: "taskboard:expand-sidebar" }, "*");
+    postEmbeddedHostMessage({ type: "taskboard:expand-sidebar" });
   }
 
   function openTaskInThread(task: Task) {
@@ -1952,7 +1977,7 @@ export function App() {
     const codexProject = hostContext?.projects?.find((project) => project.id === selectedProject?.id);
     setOpeningThreadTaskId(task.id);
     setActionError(null);
-    window.parent.postMessage({
+    postEmbeddedHostMessage({
       type: "taskboard:create-thread",
       payload: {
         taskId: task.id,
@@ -1965,7 +1990,7 @@ export function App() {
         workspacePath,
         workspaceLabel: worktreePath ? workspaceName(worktreePath) : undefined,
       },
-    }, "*");
+    });
   }
 
   function changeProject(projectId: string) {

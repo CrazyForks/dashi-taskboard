@@ -9,10 +9,11 @@ const sourceUrl = new URL("../inject/codex-taskboard.user.js", import.meta.url);
 const source = await readFile(sourceUrl, "utf8");
 const webStyles = await readFile(new URL("../web/src/styles.css", import.meta.url), "utf8");
 const webApp = await readFile(new URL("../web/src/App.tsx", import.meta.url), "utf8");
+const embeddedHost = await readFile(new URL("../web/src/embeddedHost.mjs", import.meta.url), "utf8");
 
 test("injection is an idempotent IIFE guarded by its current source hash", () => {
   assert.match(source, /^\(\(\) => \{/);
-  assert.match(source, /const VERSION = "0\.6\.12"/);
+  assert.match(source, /const VERSION = "0\.6\.13"/);
   assert.match(source, /const SOURCE_HASH = window\.__CODEX_TASKBOARD_SOURCE_HASH__/);
   assert.match(source, /const SENTINEL_KEY = "__codexTaskboardInjection__"/);
   assert.match(source, /previous\?\.sourceHash === SOURCE_HASH/);
@@ -26,7 +27,8 @@ test("embedded page uses the launcher URL inside an opaque sandbox", () => {
   assert.match(source, /window\.__CODEX_TASKBOARD_URL__/);
   assert.match(source, /nextFrame\.name = frameName/);
   assert.match(source, /nextFrame\.src = "about:blank"/);
-  assert.match(source, /requestHost\("load-frame", \{ frameName \}\)/);
+  assert.match(source, /requestHost\("load-frame", \{ frameName, frameCapability: capability \}\)/);
+  assert.match(source, /frameCapability = crypto\.randomUUID\(\)/);
   assert.match(source, /nextFrame\.setAttribute\("sandbox", "allow-scripts/);
   assert.match(source, /taskboardOrigin = taskboardUrl\.origin/);
   assert.match(source, /frameOrigin = "null"/);
@@ -151,14 +153,30 @@ test("reopening reuses a ready cache-busted iframe without showing the startup p
   assert.doesNotMatch(prepareSource, /async function prepareTaskboard\(generation\) \{\s*showLoading\(\);/);
 });
 
-test("opaque iframe messages require both the null origin and exact source window", () => {
+test("opaque iframe messages require the current document capability", () => {
   assert.match(
     source,
     /event\.source !== frame\.contentWindow \|\| event\.origin !== frameOrigin/,
   );
   assert.match(source, /message\.type === "taskboard:open-thread"/);
   assert.match(source, /message\.type === "taskboard:create-thread"/);
+  assert.match(source, /message\.capability !== frameCapability/);
+  assert.match(source, /message\.challenge !== frameChallenge/);
+  assert.match(source, /nextFrame\.addEventListener\("load", challengeFrameDocument\)/);
+  assert.match(source, /type: "taskboard:frame-challenge"/);
+  assert.match(source, /frameCapability = ""/);
+  assert.doesNotMatch(source, /nextFrame\.addEventListener\("load", postHostContext\)/);
   assert.match(source, /postMessage\(message, frameOrigin === "null" \? "\*" : frameOrigin\)/);
+});
+
+test("packaged HTTPS links are opened by the authenticated host instead of a sandbox popup", () => {
+  assert.match(embeddedHost, /a\[target="_blank"\]/);
+  assert.match(embeddedHost, /url\.protocol !== "https:"/);
+  assert.match(embeddedHost, /event\.preventDefault\(\)/);
+  assert.match(embeddedHost, /type: "taskboard:open-external"/);
+  assert.match(embeddedHost, /challenge: activeFrameChallenge/);
+  assert.match(source, /message\.type === "taskboard:open-external"/);
+  assert.match(source, /requestHost\("open-external", \{ url: url\.href \}\)/);
 });
 
 test("the iframe automation contract is forwarded through the fixed host binding", () => {

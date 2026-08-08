@@ -16,6 +16,7 @@ import {
   isTaskStatus,
 } from "../shared/domain.mjs";
 import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
+import { withoutTaskboardLauncherEnvironment } from "../shared/codex-environment.mjs";
 import { normalizeWorkflowSnapshot } from "../shared/workflow-control-flow.mjs";
 import { AiChatService } from "./ai-chat.mjs";
 import { resolveAiWorkspace, resolveMappedAiWorkspace } from "./ai-chat-catalog.mjs";
@@ -1099,20 +1100,24 @@ function parseWorktrees(output) {
   return contexts;
 }
 
-async function scanDevelopmentContexts(workspacePath) {
+async function scanDevelopmentContexts(workspacePath, processEnv = process.env) {
   if (!workspacePath) return { workspacePath: null, contexts: [] };
+  const environment = withoutTaskboardLauncherEnvironment(processEnv);
   try {
     const rootResult = await execFileAsync("git", ["-C", workspacePath, "rev-parse", "--show-toplevel"], {
+      env: environment,
       timeout: 4_000,
       maxBuffer: 1024 * 1024,
     });
     const root = rootResult.stdout.trim();
     const [branchesResult, worktreesResult] = await Promise.all([
       execFileAsync("git", ["-C", root, "for-each-ref", "--format=%(refname:short)", "refs/heads"], {
+        env: environment,
         timeout: 4_000,
         maxBuffer: 1024 * 1024,
       }),
       execFileAsync("git", ["-C", root, "worktree", "list", "--porcelain"], {
+        env: environment,
         timeout: 4_000,
         maxBuffer: 1024 * 1024,
       }),
@@ -1130,10 +1135,11 @@ async function scanDevelopmentContexts(workspacePath) {
   }
 }
 
-async function discoverSkills(codexExecutable, workspacePath) {
+async function discoverSkills(codexExecutable, workspacePath, processEnv) {
   const entries = await new Promise((resolve, reject) => {
     const child = spawn(codexExecutable, ["app-server", "--stdio"], {
       cwd: workspacePath,
+      env: processEnv,
       stdio: ["pipe", "pipe", "ignore"],
     });
     let settled = false;
@@ -1244,8 +1250,9 @@ async function discoverSkills(codexExecutable, workspacePath) {
   return [...unique.values()].sort((left, right) => left.label.localeCompare(right.label));
 }
 
-async function discoverMcpServers(codexExecutable) {
+async function discoverMcpServers(codexExecutable, processEnv) {
   const result = await execFileAsync(codexExecutable, ["mcp", "list", "--json"], {
+    env: processEnv,
     timeout: 8_000,
     maxBuffer: 2 * 1024 * 1024,
   });
@@ -1269,10 +1276,10 @@ async function discoverMcpServers(codexExecutable) {
     .sort((left, right) => left.label.localeCompare(right.label));
 }
 
-async function discoverWorkflowCapabilities(resolved, workspacePath) {
+async function discoverWorkflowCapabilities(resolved, workspacePath, processEnv) {
   const [skills, mcpServers] = await Promise.all([
-    discoverSkills(resolved.codexExecutable, workspacePath),
-    discoverMcpServers(resolved.codexExecutable),
+    discoverSkills(resolved.codexExecutable, workspacePath, processEnv),
+    discoverMcpServers(resolved.codexExecutable, processEnv),
   ]);
   return { skills, mcpServers };
 }
@@ -1333,6 +1340,9 @@ export function resolveHost(value = process.env.CODEX_TASKBOARD_HOST ?? "0.0.0.0
 
 export function createTaskboardServer(options = {}) {
   const resolved = resolveServerOptions(options);
+  const codexProcessEnvironment = withoutTaskboardLauncherEnvironment(
+    options.processEnv ?? process.env,
+  );
   const routePrefix = resolved.instanceToken ? `/${resolved.instanceToken}` : "";
   const database = new TaskboardDatabase(resolved.databasePath);
   const events = new EventHub();
@@ -1347,7 +1357,7 @@ export function createTaskboardServer(options = {}) {
       const config = await cloudConfig.read();
       const workspacePath = config.projectMappings[projectId];
       if (!workspacePath) return null;
-      const result = await scanDevelopmentContexts(workspacePath);
+      const result = await scanDevelopmentContexts(workspacePath, codexProcessEnvironment);
       return result.contexts.find((candidate) => (
         candidate.type === "worktree" && candidate.branch === context.branch
       )) ?? null;
@@ -1458,11 +1468,13 @@ export function createTaskboardServer(options = {}) {
     codexExecutable: resolved.codexExecutable,
     codexStatePath: resolved.codexStatePath,
     manageTaskboardSkillPath: resolved.skillPath,
+    processEnv: codexProcessEnvironment,
     resolveContext: resolveAiChatContext,
   });
   const projectSummary = new ProjectSummaryService({
     database,
     codexExecutable: resolved.codexExecutable,
+    processEnv: codexProcessEnvironment,
     workspacePath: PROJECT_ROOT,
   });
   const aiEventResponses = new Set();
@@ -1936,7 +1948,11 @@ export function createTaskboardServer(options = {}) {
         return sendJson(
           response,
           200,
-          await discoverWorkflowCapabilities(resolved, workspacePath ?? PROJECT_ROOT),
+          await discoverWorkflowCapabilities(
+            resolved,
+            workspacePath ?? PROJECT_ROOT,
+            codexProcessEnvironment,
+          ),
         );
       }
 
@@ -2069,7 +2085,11 @@ export function createTaskboardServer(options = {}) {
           resolved.codexStatePath,
           resolved.codexProcessesPath,
         );
-        return sendJson(response, 200, await scanDevelopmentContexts(workspacePath));
+        return sendJson(
+          response,
+          200,
+          await scanDevelopmentContexts(workspacePath, codexProcessEnvironment),
+        );
       }
 
       if (pathname === "/api/tasks") {

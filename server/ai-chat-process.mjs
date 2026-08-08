@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 
+import { withoutTaskboardLauncherEnvironment } from "../shared/codex-environment.mjs";
+
 const VISIBLE_TEXT_LIMIT = 65_536;
 const STDERR_LIMIT = 65_536;
 const SKILL_MARKER = "\uFFFC";
@@ -338,7 +340,7 @@ export function spawnCodexTurn({
 }) {
   const child = spawn(executable, args, {
     detached: true,
-    env,
+    env: withoutTaskboardLauncherEnvironment(env),
     stdio: ["pipe", "pipe", "pipe"],
   });
 

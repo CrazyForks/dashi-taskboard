@@ -24,7 +24,17 @@ function parseHostRequest(payload, parseAutomationRequest) {
     request.action === "load-frame"
     && typeof request.frameName === "string"
     && /^codex-taskboard-[a-f0-9-]{36,80}$/i.test(request.frameName)
+    && typeof request.frameCapability === "string"
+    && /^[a-f0-9-]{36,80}$/i.test(request.frameCapability)
   ) return { id, request, error: null };
+  if (request.action === "open-external" && typeof request.url === "string") {
+    try {
+      const url = new URL(request.url);
+      if (url.protocol === "https:" && url.href.length <= 2_048) {
+        return { id, request: { ...request, url: url.href }, error: null };
+      }
+    } catch {}
+  }
   if (request.action === "automation") {
     const parsed = parseAutomationRequest(request);
     return parsed
@@ -73,6 +83,8 @@ export async function handleHostBindingPayload(params, handlers) {
       result = await handlers.ensure();
     } else if (parsed.request.action === "load-frame") {
       result = await handlers.loadFrame(parsed.request);
+    } else if (parsed.request.action === "open-external") {
+      result = await handlers.openExternal(parsed.request);
     } else if (parsed.request.action === "automation") {
       result = await handlers.runAutomation(parsed.request, params.executionContextId);
     } else {

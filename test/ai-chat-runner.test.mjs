@@ -43,12 +43,19 @@ async function createFixture() {
     realpath(otherWorkspacePath),
   ]);
   const capturePath = path.join(directory, "capture.jsonl");
+  const environmentCapturePath = path.join(directory, "environment-capture.jsonl");
   const descendantPath = path.join(directory, "descendant-alive");
   const executable = path.join(directory, "fake-codex.mjs");
   await writeFile(executable, `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 const args = process.argv.slice(2);
+if (process.env.FAKE_ENVIRONMENT_CAPTURE_PATH) {
+  appendFileSync(process.env.FAKE_ENVIRONMENT_CAPTURE_PATH, JSON.stringify({
+    args,
+    launcherKeys: Object.keys(process.env).filter((name) => name.startsWith("CODEX_TASKBOARD_")),
+  }) + "\\n");
+}
 if (args[0] === "debug" && args[1] === "models") {
   if (args.length !== 2) process.exit(2);
   process.stdout.write(JSON.stringify({models:[{
@@ -147,6 +154,11 @@ if (args[0] === "app-server") {
       ...process.env,
       FAKE_CAPTURE_PATH: capturePath,
       FAKE_DESCENDANT_PATH: descendantPath,
+      FAKE_ENVIRONMENT_CAPTURE_PATH: environmentCapturePath,
+      CODEX_TASKBOARD_INSTANCE_TOKEN: "must-not-reach-codex",
+      CODEX_TASKBOARD_INSTANCE_SECRET: "must-not-reach-codex",
+      CODEX_TASKBOARD_PORT: "47823",
+      CODEX_TASKBOARD_VERSION: "0.2.0",
     },
     killGraceMs: 50,
   });
@@ -156,6 +168,7 @@ if (args[0] === "app-server") {
     databasePath,
     descendantPath,
     directory,
+    environmentCapturePath,
     otherWorkspace,
     service,
     workspace,
@@ -204,6 +217,11 @@ test("Codex turns use stdin, explicit resume ids, server-owned cwd and sanitized
     await waitFor(() => fixture.service.getRun(second.id)?.status !== "running");
 
     const captures = (await readFile(fixture.capturePath, "utf8")).trim().split("\n").map(JSON.parse);
+    const environmentCaptures = (
+      await readFile(fixture.environmentCapturePath, "utf8")
+    ).trim().split("\n").map(JSON.parse);
+    assert.ok(environmentCaptures.length >= 3);
+    assert.equal(environmentCaptures.every((entry) => entry.launcherKeys.length === 0), true);
     assert.deepEqual(captures[0].args, [
       "exec", "--json", "--color", "never",
       "-C", fixture.workspace,

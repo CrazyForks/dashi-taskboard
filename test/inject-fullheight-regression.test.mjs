@@ -21,6 +21,10 @@ const source = sourceRef
       { cwd: projectRoot, maxBuffer: 2 * 1024 * 1024 },
     )).stdout
   : await readFile(new URL("../inject/codex-taskboard.user.js", import.meta.url), "utf8");
+const embeddedHostSource = await readFile(
+  new URL("../web/src/embeddedHost.mjs", import.meta.url),
+  "utf8",
+);
 
 async function chromeExecutable() {
   const candidates = [
@@ -97,6 +101,11 @@ function fixtureHtml(origin) {
       window.__browserPanelClosed = false;
       window.__injectionError = null;
       window.__frameMessages = [];
+      window.__externalOpenUrl = null;
+      window.__frameVisibleBeforeNavigation = false;
+      window.__statusHiddenBeforeNavigation = false;
+      window.__hostileNavigationLoaded = false;
+      window.__forgedThreadOpened = false;
       window.addEventListener("error", (event) => {
         window.__injectionError = event.error?.stack || event.message;
       });
@@ -115,13 +124,42 @@ function fixtureHtml(origin) {
           const request = event.data.payload;
           if (request.action === "load-frame") {
             const frame = document.querySelector('iframe[name="' + request.frameName + '"]');
-            frame.srcdoc = '<script>parent.postMessage({ type: "taskboard:ready" }, "*")<\\/script>';
+            const moduleUrl = ${JSON.stringify(`${origin}/embeddedHost.mjs`)};
+            frame.srcdoc = '<a id="external-link" href="https://example.com/review" target="_blank">Review</a>'
+              + '<script type="module">import * as host from ' + JSON.stringify(moduleUrl) + ';'
+              + 'globalThis.__CODEX_TASKBOARD_FRAME_CAPABILITY__='
+              + JSON.stringify(request.frameCapability)
+              + ';host.installEmbeddedExternalLinkHandler();'
+              + 'let activated=false,acknowledgedChallenge="";window.addEventListener("message",function(event){'
+              + 'if(event.data?.type!=="taskboard:frame-challenge")return;'
+              + 'const challenge=event.data.payload?.challenge;if(!challenge||challenge===acknowledgedChallenge)return;'
+              + 'acknowledgedChallenge=challenge;host.setEmbeddedFrameChallenge(challenge);'
+              + 'host.postEmbeddedHostMessage({type:"taskboard:ready"});'
+              + 'if(activated)return;activated=true;'
+              + 'parent.postMessage({type:"taskboard:ready"},"*");'
+              + 'parent.postMessage({type:"taskboard:open-thread",payload:{threadId:"forged"}},"*");'
+              + 'document.getElementById("external-link").click();'
+              + '});host.postEmbeddedHostMessage({type:"taskboard:frame-awaiting-challenge"});<\\/script>';
+          }
+          if (request.action === "open-external") {
+            window.__externalOpenUrl = request.url;
+            const frame = document.getElementById("codex-taskboard-frame");
+            window.__frameVisibleBeforeNavigation = frame?.hidden === false;
+            window.__statusHiddenBeforeNavigation = document.getElementById("codex-taskboard-status")?.hidden === true;
+            frame?.addEventListener("load", () => {
+              window.__hostileNavigationLoaded = true;
+            }, { once: true });
+            frame.removeAttribute("srcdoc");
+            frame.src = ${JSON.stringify(`${origin}/attacker`)};
           }
           window.postMessage({
             type: "__codexTaskboardHostResponseV1",
             capability: "fullheight-host-capability",
             response: { id: request.id, ok: true, loaded: true },
           }, window.location.origin);
+        }
+        if (event.source === window && event.data?.type === "navigate-to-route") {
+          window.__forgedThreadOpened = true;
         }
         if (event.data?.type !== "toggle-browser-panel" || event.data.open !== false) return;
         const panel = document.querySelector("[data-browser-sidebar-webview]");
@@ -152,7 +190,7 @@ function fixtureHtml(origin) {
 
         for (let attempt = 0; attempt < 500; attempt += 1) {
           const frame = document.getElementById("codex-taskboard-frame");
-          if (frame && frame.hidden === false) break;
+          if (frame && window.__externalOpenUrl && window.__hostileNavigationLoaded) break;
           await new Promise((resolve) => setTimeout(resolve, 20));
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
@@ -172,6 +210,11 @@ function fixtureHtml(origin) {
           frameIsolated: frame?.contentDocument === null,
           statusHidden: document.getElementById("codex-taskboard-status")?.hidden === true,
           frameMessages: window.__frameMessages,
+          externalOpenUrl: window.__externalOpenUrl,
+          frameVisibleBeforeNavigation: window.__frameVisibleBeforeNavigation,
+          statusHiddenBeforeNavigation: window.__statusHiddenBeforeNavigation,
+          hostileNavigationRevoked: Boolean(frame?.hidden && !document.getElementById("codex-taskboard-status")?.hidden),
+          forgedThreadOpened: window.__forgedThreadOpened,
           injectionError: window.__injectionError,
         };
         document.getElementById("result").textContent = btoa(JSON.stringify(result));
@@ -183,7 +226,7 @@ function fixtureHtml(origin) {
 </html>`;
 }
 
-test("Taskboard stays visible when closing the browser panel makes the conversation full height", async (t) => {
+test("Taskboard fills the workspace, opens HTTPS links and revokes hostile iframe navigation", async (t) => {
   const chrome = await chromeExecutable();
   if (!chrome) {
     t.skip("Chrome or Chromium is not installed");
@@ -192,6 +235,17 @@ test("Taskboard stays visible when closing the browser panel makes the conversat
 
   const server = http.createServer((request, response) => {
     response.setHeader("connection", "close");
+    if (request.url === "/embeddedHost.mjs") {
+      response.setHeader("access-control-allow-origin", "null");
+      response.setHeader("content-type", "text/javascript; charset=utf-8");
+      response.end(embeddedHostSource);
+      return;
+    }
+    if (request.url === "/attacker") {
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end("<!doctype html><title>attacker</title>");
+      return;
+    }
     if (request.url?.startsWith("/taskboard")) {
       response.setHeader("access-control-allow-origin", "null");
       response.setHeader("access-control-expose-headers", "x-codex-taskboard-proof");
@@ -257,12 +311,21 @@ test("Taskboard stays visible when closing the browser panel makes the conversat
     pageMounted: true,
     pageVisible: true,
     frameMounted: true,
-    frameVisible: true,
+    frameVisible: false,
     frameIsolated: true,
-    statusHidden: true,
+    statusHidden: false,
     frameMessages: [
+      { type: "taskboard:frame-awaiting-challenge", origin: "null" },
       { type: "taskboard:ready", origin: "null" },
+      { type: "taskboard:ready", origin: "null" },
+      { type: "taskboard:open-thread", origin: "null" },
+      { type: "taskboard:open-external", origin: "null" },
     ],
+    externalOpenUrl: "https://example.com/review",
+    frameVisibleBeforeNavigation: true,
+    statusHiddenBeforeNavigation: true,
+    hostileNavigationRevoked: true,
+    forgedThreadOpened: false,
     injectionError: null,
   });
 });

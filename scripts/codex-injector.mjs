@@ -8,6 +8,7 @@ import path from "node:path";
 
 import { resolvePort } from "../server/app.mjs";
 import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
+import { withoutTaskboardLauncherEnvironment } from "../shared/codex-environment.mjs";
 import {
   parseTaskboardAutomationHostRequest,
   reconcileTaskboardAutomation,
@@ -19,6 +20,7 @@ import {
   restartResidentInjector,
 } from "./codex-injector-runtime.mjs";
 import { readCodexQuotaStatus } from "./codex-rate-limits.mjs";
+import { createTaskboardSupervisor } from "./taskboard-supervisor.mjs";
 
 const injectorPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(injectorPath), "..");
@@ -176,87 +178,6 @@ function startTaskboard({ detached }) {
   });
 }
 
-function createTaskboardSupervisor({ detached }) {
-  let child = null;
-  let ensureInFlight = null;
-  let retryAfter = 0;
-  let stopping = false;
-
-  async function ensure({ force = false } = {}) {
-    const reachable = await isTaskboardReachable();
-    if (stopping) throw new Error("Taskboard supervisor is stopping");
-    if (reachable) {
-      return { status: "ok", restarted: false };
-    }
-    if (ensureInFlight) return ensureInFlight;
-    if (!force && Date.now() < retryAfter) {
-      throw new Error("Taskboard restart is waiting before its next attempt");
-    }
-
-    ensureInFlight = (async () => {
-      if (child?.exitCode === null && !child.killed) {
-        try {
-          await waitUntilTaskboardReachable(3_000);
-          return { status: "ok", restarted: false };
-        } catch (_) {}
-      }
-
-      if (stopping) throw new Error("Taskboard supervisor is stopping");
-      const started = startTaskboard({ detached });
-      child = started;
-      if (detached) started.unref();
-      started.once("error", (error) => {
-        if (!stopping) console.error(`Taskboard process error: ${error.message}`);
-      });
-      started.once("exit", (code, signal) => {
-        if (child === started) child = null;
-        if (!stopping && !detached && code !== 0) {
-          console.error(`Taskboard exited (${signal || code}); it will be restarted automatically.`);
-        }
-      });
-
-      try {
-        await waitUntilTaskboardReachable(10_000);
-        retryAfter = 0;
-        return { status: "ok", restarted: true };
-      } catch (error) {
-        retryAfter = Date.now() + 2_000;
-        throw error;
-      }
-    })();
-
-    try {
-      return await ensureInFlight;
-    } finally {
-      ensureInFlight = null;
-    }
-  }
-
-  async function stop() {
-    stopping = true;
-    const managedChild = child;
-    if (!managedChild || managedChild.exitCode !== null) return;
-    const exitPromise = new Promise((resolve) => {
-      managedChild.once("exit", () => resolve(true));
-    });
-    if (!managedChild.killed) managedChild.kill("SIGTERM");
-
-    const exited = await Promise.race([
-      exitPromise,
-      new Promise((resolve) => setTimeout(() => resolve(false), 3_000)),
-    ]);
-    if (!exited && managedChild.exitCode === null) {
-      managedChild.kill("SIGKILL");
-      await Promise.race([
-        exitPromise,
-        new Promise((resolve) => setTimeout(resolve, 1_000)),
-      ]);
-    }
-  }
-
-  return { ensure, stop };
-}
-
 function launchCodex(appPath, port) {
   const executablePath = path.join(
     appPath,
@@ -272,7 +193,10 @@ function launchCodex(appPath, port) {
       `--remote-debugging-port=${port}`,
       `--remote-allow-origins=http://127.0.0.1:${port}`,
     ],
-    { stdio: "ignore" },
+    {
+      env: withoutTaskboardLauncherEnvironment(process.env),
+      stdio: "ignore",
+    },
   );
 }
 
@@ -404,6 +328,7 @@ function codexDebuggingPorts(preferredPort) {
   const ports = new Set([preferredPort]);
   const processes = spawnSync("/bin/ps", ["-axo", "command="], {
     encoding: "utf8",
+    env: withoutTaskboardLauncherEnvironment(process.env),
     maxBuffer: 4 * 1024 * 1024,
   });
   if (processes.status !== 0) return [...ports];
@@ -426,6 +351,7 @@ function processCwd(pid) {
     "-Fn",
   ], {
     encoding: "utf8",
+    env: withoutTaskboardLauncherEnvironment(process.env),
     maxBuffer: 64 * 1024,
   });
   if (result.status !== 0) return null;
@@ -436,6 +362,7 @@ function processCwd(pid) {
 function residentInjectorPids(port) {
   const processes = spawnSync("/bin/ps", ["-axo", "pid=,command="], {
     encoding: "utf8",
+    env: withoutTaskboardLauncherEnvironment(process.env),
     maxBuffer: 4 * 1024 * 1024,
   });
   if (processes.status !== 0) return [];
@@ -608,7 +535,7 @@ function findFrameByName(frameTree, frameName) {
   return null;
 }
 
-async function verifiedTaskboardDocument() {
+async function verifiedTaskboardDocument(frameCapability) {
   const challenge = randomBytes(32).toString("hex");
   const response = await fetch(taskboardPageUrl, {
     cache: "no-store",
@@ -626,11 +553,14 @@ async function verifiedTaskboardDocument() {
   const html = await response.text();
   const head = "<head>";
   if (!html.includes(head)) throw new Error("Taskboard document has no head element");
-  return html.replace(head, `${head}<base href=${JSON.stringify(taskboardPageUrl)}>`);
+  return html.replace(
+    head,
+    `${head}<base href=${JSON.stringify(taskboardPageUrl)}><script>globalThis.__CODEX_TASKBOARD_FRAME_CAPABILITY__=${JSON.stringify(frameCapability)};</script>`,
+  );
 }
 
-async function loadTaskboardFrameViaCdp(cdp, frameName) {
-  const html = await verifiedTaskboardDocument();
+async function loadTaskboardFrameViaCdp(cdp, frameName, frameCapability) {
+  const html = await verifiedTaskboardDocument(frameCapability);
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     const { frameTree } = await cdp.send("Page.getFrameTree");
@@ -645,6 +575,22 @@ async function loadTaskboardFrameViaCdp(cdp, frameName) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error("Timed out waiting for the isolated Taskboard frame");
+}
+
+async function openExternalUrl(request) {
+  await new Promise((resolve, reject) => {
+    const child = spawn("/usr/bin/open", [request.url], {
+      detached: true,
+      env: withoutTaskboardLauncherEnvironment(process.env),
+      stdio: "ignore",
+    });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+  return { opened: true };
 }
 
 async function requestCodexAutomationViaCdp(cdp, executionContextId, method, params) {
@@ -1000,7 +946,12 @@ function installTaskboardHostBinding(cdp, supervisor, startupToken) {
       isAuthorizedContext: (executionContextId) => executionContextId === activeContextId,
       parseAutomationRequest: parseTaskboardAutomationHostRequest,
       ensure: () => supervisor.ensure({ force: true }),
-      loadFrame: (request) => loadTaskboardFrameViaCdp(cdp, request.frameName),
+      loadFrame: (request) => loadTaskboardFrameViaCdp(
+        cdp,
+        request.frameName,
+        request.frameCapability,
+      ),
+      openExternal: openExternalUrl,
       runAutomation: (request) => (
         (async () => {
           const rpc = (method, body) => requestCodexAutomationViaCdp(
@@ -1367,7 +1318,19 @@ async function main() {
   }
 
   let codexProcess = null;
-  const supervisor = createTaskboardSupervisor({ detached: !options.watch });
+  const detached = !options.watch;
+  const supervisor = createTaskboardSupervisor({
+    detached,
+    isReachable: isTaskboardReachable,
+    waitUntilReachable: waitUntilTaskboardReachable,
+    start: () => startTaskboard({ detached }),
+    onProcessError: (error) => {
+      console.error(`Taskboard process error: ${error.message}`);
+    },
+    onUnexpectedExit: (code, signal) => {
+      console.error(`Taskboard exited (${signal || code}); it will be restarted automatically.`);
+    },
+  });
 
   try {
     let cdpReachable = await isReachable(cdpVersionUrl);

@@ -166,6 +166,7 @@ async function copyApplicationResources() {
     "codex-injector.mjs",
     "codex-injector-runtime.mjs",
     "codex-rate-limits.mjs",
+    "taskboard-supervisor.mjs",
   ]) {
     await copyFile(
       path.join(projectRoot, "scripts", fileName),
