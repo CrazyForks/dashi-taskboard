@@ -1,31 +1,27 @@
 ---
 name: manage-taskboard
-description: Manage taskboard projects, issues, issue relations, and comments through the taskctl CLI. Use when Codex needs to track a new requirement, inspect project work, create or update issues, relate dependent work, add progress notes, begin work on an issue, record completion, or coordinate concurrent updates.
+description: Manage taskboard work with taskctl. Use for e-taskboard prompts, issue IDs from any project, status sync, or comments.
 ---
 
 # Manage Taskboard
 
-Use `taskctl` for every project, issue, and comment operation. Read [references/cli.md](references/cli.md) before choosing a command or option.
+Use `taskctl` for every project, issue, relation, and comment operation. Consume its JSON output. Use the exact issue identifier returned by the taskboard or supplied in the prompt. Never assume, derive, or rewrite an identifier prefix.
 
-## Workflow
+Open only the relevant section of [references/cli.md](references/cli.md) when command syntax is needed.
 
-1. Search for an existing issue before creating one. Use `context current`, then list the project issues and compare their identifiers, titles, descriptions, and status.
-   - If an issue already tracks the same requirement, append the new requirement or acceptance detail to that issue without discarding its existing scope.
-   - If the work depends on, blocks, is blocked by, or is closely related to another issue, add the matching issue relation.
-   - Use a parent/sub-issue relation when one requirement is a contained part of a larger issue. A child has one parent; a parent may have many sub-issues.
-   - Create a new issue only when no existing issue reasonably tracks the requirement.
-   - Do not create, append, or relate a tiny or trivial request that does not benefit from durable tracking.
-2. Before executing an issue, read the latest issue content and all comments. Treat comments as part of the current requirements, especially when completed work has been returned for changes.
-   - In a description or comment, `![alt](/api/attachments/<id>/content)` marks an inline image at that exact position in the text.
-   - When understanding that image is necessary, use `attachment download` to save it locally, then inspect the saved file with an available image-viewing tool.
-3. Create or update issues with the CLI; consume its JSON output.
-   Issues created through `taskctl` are assigned to Codex Agent by default. Later CLI updates do not change the assignee.
-4. Let `taskctl` attribute every issue, relation, or comment mutation to the current Codex conversation through `CODEX_THREAD_ID`. Outside Codex, pass the exact conversation id with `--thread-id`.
-5. To claim a `todo` issue, move it to `in_progress` with `--if-version` from the latest read before starting implementation. If this claim reports a version conflict or a new read shows that its status changed, skip the issue and do not implement it.
-6. Include `--if-version <version>` on every concurrent update, using the version returned by the latest read.
-7. Before requesting review, verify the requested work and acceptance criteria.
-8. After implementation and self-verification, add a comment summarizing the key changes, verification, result, and remaining risks; then move the issue to `in_review`. Never move it directly to `done`.
-9. Move an issue from `in_review` to `done` only when the user explicitly confirms acceptance or explicitly asks to mark it complete. Codex self-verification alone is not sufficient.
-10. Move work that cannot continue to `blocked`, and work that will not continue to `canceled`.
+## Core workflow
 
-For version conflicts outside the initial claim, read the issue again, reconcile the newer state, and retry with its current version.
+1. For an existing issue, run `issue get` and `comment list` before acting. Treat comments as current requirements, including returned work.
+2. For a new durable requirement, run `context current` and search existing project issues before creating one. Update a matching issue instead of creating a duplicate. Do not track trivial requests.
+3. Before starting or resuming work, read the issue again and move it to `in_progress` with its current `version`. Stop if the status changed or the write conflicts.
+4. Execute only the requested work in the issue's branch or worktree when one is bound.
+5. Verify the requested operation path. Add a comment with the changes, verification result, outcome, and remaining risks. Read the issue again, then move it to `in_review` with its current `version`.
+6. Move an issue to `done` only after the user explicitly accepts it or asks to complete it. Use `blocked` when work cannot continue and `canceled` when it will not continue.
+
+## Other operations
+
+- Preserve existing issue scope when adding requirements or acceptance details.
+- Add only relations that the work requires. Use parent for contained work, blocks or blocked_by for dependencies, and related for close association.
+- Let `taskctl` read `CODEX_THREAD_ID` for writes. Outside Codex, pass the exact conversation ID with `--thread-id`.
+- Use the latest returned `version` with `--if-version` for concurrent updates. On conflict, read the issue again and reconcile before retrying.
+- Download and inspect an inline `![alt](/api/attachments/<id>/content)` image only when it is needed to understand the requirement.
