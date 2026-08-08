@@ -160,6 +160,10 @@ if (args[0] === "app-server") {
       CODEX_TASKBOARD_PORT: "47823",
       CODEX_TASKBOARD_VERSION: "0.2.0",
     },
+    processRegistry: {
+      registryDirectory: path.join(directory, "ai-turn-processes"),
+      generation: "fixture-generation",
+    },
     killGraceMs: 50,
   });
   return {
@@ -422,6 +426,10 @@ test("startup marks abandoned runs interrupted while preserving the Codex thread
     codexExecutable: path.join(fixture.directory, "fake-codex.mjs"),
     codexStatePath: path.join(fixture.directory, "codex-state.json"),
     manageTaskboardSkillPath: "/fixture/manage-taskboard/SKILL.md",
+    processRegistry: {
+      registryDirectory: path.join(fixture.directory, "ai-turn-processes"),
+      generation: "restarted-generation",
+    },
   });
   fixture.service = restarted;
   try {

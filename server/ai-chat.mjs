@@ -25,18 +25,6 @@ function cappedError(value) {
   return message.slice(0, ERROR_CONTENT_LIMIT);
 }
 
-function signalProcessGroup(child, signal) {
-  if (Number.isInteger(child?.pid)) {
-    try {
-      process.kill(-child.pid, signal);
-      return;
-    } catch {}
-  }
-  try {
-    child?.kill(signal);
-  } catch {}
-}
-
 function wait(milliseconds) {
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, milliseconds);
@@ -51,6 +39,7 @@ export class AiChatService {
     this.codexStatePath = options.codexStatePath;
     this.manageTaskboardSkillPath = options.manageTaskboardSkillPath;
     this.processEnv = options.processEnv ?? process.env;
+    this.processRegistry = options.processRegistry;
     this.killGraceMs = options.killGraceMs ?? 1_000;
     this.resolveContext = options.resolveContext ?? (async (projectId, issueId) => {
       const resolved = await resolveAiWorkspace(projectId, this.codexStatePath, this.database);
@@ -70,6 +59,7 @@ export class AiChatService {
     this.active = new Map();
     this.listeners = new Map();
     this.completions = new Map();
+    this.closed = false;
   }
 
   listThreads() {
@@ -298,11 +288,15 @@ export class AiChatService {
       let startedThreadId = null;
       let terminalOutcome = null;
       let terminalError = "";
-      const { child, completion } = spawnCodexTurn({
+      const { child, completion, terminate } = await spawnCodexTurn({
         executable: this.codexExecutable,
         args,
         prompt,
         env: this.processEnv,
+        processOwner: {
+          ...this.processRegistry,
+          owner: `run:${run.id}`,
+        },
         onRawEvent: (raw) => {
           const normalized = normalizeCodexEvent(raw);
           if (!normalized) return;
@@ -335,7 +329,7 @@ export class AiChatService {
         },
       });
 
-      const active = { child, threadId, interrupted: false, temporaryDirectory };
+      const active = { child, terminate, threadId, interrupted: false, temporaryDirectory };
       this.active.set(run.id, active);
       const finalization = completion.then(
         (result) => this.#finishRun({
@@ -359,6 +353,11 @@ export class AiChatService {
       );
       this.completions.set(run.id, finalization);
       void finalization.finally(() => this.completions.delete(run.id)).catch(() => {});
+      if (this.closed) {
+        active.interrupted = true;
+        void active.terminate({ terminateGraceMs: this.killGraceMs }).catch(() => {});
+        await finalization;
+      }
       return run;
     } catch (error) {
       if (temporaryDirectory) {
@@ -384,11 +383,7 @@ export class AiChatService {
     }
 
     active.interrupted = true;
-    signalProcessGroup(active.child, "SIGTERM");
-    const timer = setTimeout(() => {
-      if (this.active.has(runId)) signalProcessGroup(active.child, "SIGKILL");
-    }, this.killGraceMs);
-    timer.unref();
+    void active.terminate({ terminateGraceMs: this.killGraceMs }).catch(() => {});
 
     const completion = this.completions.get(runId);
     if (completion) {
@@ -398,10 +393,11 @@ export class AiChatService {
   }
 
   async close() {
+    this.closed = true;
     const entries = [...this.active.entries()];
     for (const [, active] of entries) {
       active.interrupted = true;
-      signalProcessGroup(active.child, "SIGTERM");
+      void active.terminate({ terminateGraceMs: this.killGraceMs }).catch(() => {});
     }
 
     const completions = entries
@@ -409,10 +405,6 @@ export class AiChatService {
       .filter(Boolean);
     if (completions.length > 0) {
       const settled = Promise.allSettled(completions);
-      await Promise.race([settled, wait(this.killGraceMs)]);
-      for (const [runId, active] of entries) {
-        if (this.active.has(runId)) signalProcessGroup(active.child, "SIGKILL");
-      }
       await settled;
     }
     this.listeners.clear();
