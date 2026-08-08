@@ -1308,6 +1308,8 @@ export function resolveServerOptions(options = {}) {
     attachmentsDirectory: options.attachmentsDirectory ?? path.join(dataDirectory, "attachments"),
     cloudConfigPath: options.cloudConfigPath ?? path.join(dataDirectory, "cloud-companion.json"),
     clientStoragePath: options.clientStoragePath ?? path.join(dataDirectory, "client-storage.json"),
+    aiTurnRegistryDirectory: options.aiTurnRegistryDirectory
+      ?? path.join(dataDirectory, "ai-turn-processes"),
     staticDirectory: options.staticDirectory ?? path.join(PROJECT_ROOT, "dist", "web"),
     skillPath: options.skillPath ?? path.join(PROJECT_ROOT, "skills", "manage-taskboard", "SKILL.md"),
     codexExecutable: resolveCodexExecutable({ explicit: options.codexExecutable }),
@@ -1317,6 +1319,9 @@ export function resolveServerOptions(options = {}) {
       ?? path.join(codexHome, "process_manager", "chat_processes.json"),
     instanceToken,
     instanceSecret,
+    serverGeneration: options.serverGeneration
+      ?? process.env.CODEX_TASKBOARD_SERVER_GENERATION
+      ?? randomUUID(),
     version: String(
       options.version ?? process.env.CODEX_TASKBOARD_VERSION ?? "development",
     ).trim(),
@@ -1500,12 +1505,20 @@ export function createTaskboardServer(options = {}) {
     codexStatePath: resolved.codexStatePath,
     manageTaskboardSkillPath: resolved.skillPath,
     processEnv: codexProcessEnvironment,
+    processRegistry: {
+      registryDirectory: resolved.aiTurnRegistryDirectory,
+      generation: resolved.serverGeneration,
+    },
     resolveContext: resolveAiChatContext,
   });
   const projectSummary = new ProjectSummaryService({
     database,
     codexExecutable: resolved.codexExecutable,
     processEnv: codexProcessEnvironment,
+    processRegistry: {
+      registryDirectory: resolved.aiTurnRegistryDirectory,
+      generation: resolved.serverGeneration,
+    },
     workspacePath: PROJECT_ROOT,
   });
   const aiEventResponses = new Set();

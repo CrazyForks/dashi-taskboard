@@ -1,10 +1,18 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 import { withoutTaskboardLauncherEnvironment } from "../shared/codex-environment.mjs";
+import {
+  TURN_TOKEN_ENV,
+  cleanupAiTurnRecord,
+  registerAiTurnProcess,
+} from "./ai-turn-process-registry.mjs";
 
 const VISIBLE_TEXT_LIMIT = 65_536;
 const STDERR_LIMIT = 65_536;
 const SKILL_MARKER = "\uFFFC";
+const TURN_OWNER_PATH = fileURLToPath(new URL("./ai-turn-owner.mjs", import.meta.url));
 const ITEM_TYPES = new Set([
   "agent_message",
   "command_execution",
@@ -330,20 +338,57 @@ export function normalizeCodexEvent(raw) {
   return normalizedItem(raw.type, raw.item);
 }
 
-export function spawnCodexTurn({
+export async function spawnCodexTurn({
   executable,
   args,
   prompt,
   env,
+  processOwner,
   onRawEvent,
   maxLineBytes = 1_048_576,
 }) {
-  const child = spawn(executable, args, {
+  const token = randomUUID();
+  const child = spawn(process.execPath, [TURN_OWNER_PATH, token, executable, JSON.stringify(args)], {
     detached: true,
-    env: withoutTaskboardLauncherEnvironment(env),
-    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...withoutTaskboardLauncherEnvironment(env),
+      [TURN_TOKEN_ENV]: token,
+    },
+    stdio: ["pipe", "pipe", "pipe", "pipe"],
   });
 
+  child.stdin.on("error", () => {});
+  await new Promise((resolve, reject) => {
+    const handleSpawn = () => {
+      child.removeListener("error", handleError);
+      resolve();
+    };
+    const handleError = (error) => {
+      child.removeListener("spawn", handleSpawn);
+      reject(error);
+    };
+    child.once("spawn", handleSpawn);
+    child.once("error", handleError);
+  });
+
+  let processRecord;
+  try {
+    processRecord = await registerAiTurnProcess({
+      ...processOwner,
+      pid: child.pid,
+      token,
+    });
+  } catch (error) {
+    const ownerExited = new Promise((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) resolve();
+      else child.once("exit", resolve);
+    });
+    child.stdio[3].destroy();
+    await ownerExited;
+    throw error;
+  }
+
+  let processCleanup = null;
   let stdoutBuffer = Buffer.alloc(0);
   let stderrBuffer = Buffer.alloc(0);
   let settled = false;
@@ -357,20 +402,18 @@ export function spawnCodexTurn({
     rejectCompletion = reject;
   });
 
-  function terminateProcessGroup() {
-    if (Number.isInteger(child.pid)) {
-      try {
-        process.kill(-child.pid, "SIGKILL");
-        return;
-      } catch {}
-    }
-    child.kill("SIGKILL");
+  function terminate({ terminateGraceMs = 250 } = {}) {
+    processCleanup ??= cleanupAiTurnRecord(processRecord.recordPath, {
+      terminateGraceMs,
+      killWaitMs: 1_000,
+    });
+    return processCleanup;
   }
 
   function rejectWithDiagnostic(error) {
     if (settled || fatalError) return;
     fatalError = error instanceof Error ? error : new Error(String(error));
-    terminateProcessGroup();
+    void terminate().catch(() => {});
   }
 
   function consumeLine(line) {
@@ -447,21 +490,31 @@ export function spawnCodexTurn({
     ]);
   });
   child.on("error", rejectWithDiagnostic);
+  child.on("exit", () => {
+    void terminate().catch((error) => {
+      if (settled) return;
+      settled = true;
+      rejectCompletion(error);
+    });
+  });
   child.on("close", (exitCode, signal) => {
     finishStdout();
     if (settled) return;
     settled = true;
-    if (fatalError) {
-      if (stderrBuffer.length > 0) {
-        fatalError.stderr = stderrBuffer.toString("utf8");
+    void terminate().then(() => {
+      if (fatalError) {
+        if (stderrBuffer.length > 0) {
+          fatalError.stderr = stderrBuffer.toString("utf8");
+        }
+        rejectCompletion(fatalError);
+        return;
       }
-      rejectCompletion(fatalError);
-      return;
-    }
-    resolveCompletion({ exitCode, signal });
+      resolveCompletion({ exitCode, signal });
+    }, rejectCompletion);
   });
-  child.stdin.on("error", () => {});
+  child.stdio[3].on("error", rejectWithDiagnostic);
   child.stdin.end(prompt);
+  child.stdio[3].end(Buffer.from([1]));
 
-  return { child, completion };
+  return { child, completion, terminate };
 }

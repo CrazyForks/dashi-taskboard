@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { resolvePort } from "../server/app.mjs";
+import { cleanupAiTurnProcesses } from "../server/ai-turn-process-registry.mjs";
 import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
 import { withoutTaskboardLauncherEnvironment } from "../shared/codex-environment.mjs";
 import {
@@ -39,6 +40,7 @@ const taskboardDataDirectory = process.env.CODEX_TASKBOARD_DATA_DIR
 const taskboardRuntimeFile = process.env.CODEX_TASKBOARD_RUNTIME_FILE
   ? path.resolve(process.env.CODEX_TASKBOARD_RUNTIME_FILE)
   : null;
+const aiTurnRegistryDirectory = path.join(taskboardDataDirectory, "ai-turn-processes");
 const taskboardListenFd = process.env.CODEX_TASKBOARD_LISTEN_FD === undefined
   ? null
   : Number(process.env.CODEX_TASKBOARD_LISTEN_FD);
@@ -196,17 +198,25 @@ async function waitUntilTaskboardReachable(timeoutMs) {
 }
 
 function startTaskboard({ detached }) {
+  const generation = randomUUID();
   const stdio = taskboardListenFd === null
     ? (detached ? "ignore" : "inherit")
     : Array.from(
       { length: taskboardListenFd + 1 },
       (_, fd) => (fd === taskboardListenFd ? "inherit" : (fd < 3 && !detached ? "inherit" : "ignore")),
     );
-  return spawn(process.execPath, [path.join(projectRoot, "server", "index.mjs")], {
-    cwd: projectRoot,
-    detached,
-    stdio,
-  });
+  return {
+    child: spawn(process.execPath, [path.join(projectRoot, "server", "index.mjs")], {
+      cwd: projectRoot,
+      detached,
+      env: {
+        ...process.env,
+        CODEX_TASKBOARD_SERVER_GENERATION: generation,
+      },
+      stdio,
+    }),
+    generation,
+  };
 }
 
 async function publishTaskboardRuntime() {
@@ -1509,6 +1519,10 @@ async function main() {
     isReachable: isTaskboardReachable,
     waitUntilReachable: waitUntilTaskboardReachable,
     start: () => startTaskboard({ detached }),
+    cleanupOwnedProcesses: (generation) => cleanupAiTurnProcesses({
+      registryDirectory: aiTurnRegistryDirectory,
+      generation,
+    }),
     onProcessError: (error) => {
       console.error(`Taskboard process error: ${error.message}`);
     },
@@ -1528,11 +1542,11 @@ async function main() {
       injectedTargets.clear();
       cdpRuntime?.close();
       cdpRuntime = null;
+      await supervisor.stop();
+      await removeTaskboardRuntime();
       const launchedCodex = codexProcess;
       codexProcess = null;
       await terminateCodex(launchedCodex);
-      await supervisor.stop();
-      await removeTaskboardRuntime();
     })();
     return cleanupPromise;
   };

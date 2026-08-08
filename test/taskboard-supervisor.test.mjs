@@ -36,18 +36,20 @@ test("an unhealthy live child exits before its replacement starts", async () => 
     start: () => {
       const child = new ManagedChild(`child-${++sequence}`, events);
       events.push(["start", child.name]);
-      return child;
+      return { child, generation: child.name };
     },
+    cleanupOwnedProcesses: async (generation) => events.push(["cleanup", generation]),
   });
 
   await supervisor.ensure();
   await supervisor.ensure({ force: true });
 
-  assert.deepEqual(events.slice(0, 6), [
+  assert.deepEqual(events.slice(0, 7), [
     ["start", "child-1"],
     ["health", 10_000],
     ["health", 3_000],
     ["kill", "child-1", "SIGTERM"],
+    ["cleanup", "child-1"],
     ["start", "child-2"],
     ["health", 10_000],
   ]);

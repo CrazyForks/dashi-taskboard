@@ -41,13 +41,32 @@ export function createTaskboardSupervisor({
   isReachable,
   waitUntilReachable,
   start,
+  cleanupOwnedProcesses,
   onProcessError = () => {},
   onUnexpectedExit = () => {},
 }) {
   let child = null;
+  let generation = null;
+  let cleanupInFlight = null;
   let ensureInFlight = null;
   let retryAfter = 0;
   let stopping = false;
+
+  async function cleanupGeneration(targetGeneration) {
+    if (targetGeneration === null) return;
+    if (cleanupInFlight?.generation === targetGeneration) {
+      await cleanupInFlight.promise;
+      return;
+    }
+    if (cleanupInFlight) await cleanupInFlight.promise;
+    const promise = cleanupOwnedProcesses(targetGeneration);
+    cleanupInFlight = { generation: targetGeneration, promise };
+    try {
+      await promise;
+    } finally {
+      if (cleanupInFlight?.promise === promise) cleanupInFlight = null;
+    }
+  }
 
   async function ensure({ force = false } = {}) {
     const reachable = await isReachable();
@@ -60,6 +79,7 @@ export function createTaskboardSupervisor({
 
     ensureInFlight = (async () => {
       const managedChild = child;
+      const managedGeneration = generation;
       if (isRunning(managedChild)) {
         try {
           await waitUntilReachable(3_000);
@@ -70,8 +90,12 @@ export function createTaskboardSupervisor({
       }
 
       if (stopping) throw new Error("Taskboard supervisor is stopping");
-      const started = start();
+      await cleanupGeneration(managedGeneration);
+      if (generation === managedGeneration) generation = null;
+      if (stopping) throw new Error("Taskboard supervisor is stopping");
+      const { child: started, generation: startedGeneration } = start();
       child = started;
+      generation = startedGeneration;
       if (detached) started.unref();
       started.once("error", (error) => {
         if (!stopping) onProcessError(error);
@@ -101,8 +125,11 @@ export function createTaskboardSupervisor({
   async function stop() {
     stopping = true;
     const managedChild = child;
+    const managedGeneration = generation;
     await terminateManagedChild(managedChild);
     if (child === managedChild) child = null;
+    await cleanupGeneration(managedGeneration);
+    if (generation === managedGeneration) generation = null;
   }
 
   return { ensure, stop };

@@ -164,9 +164,7 @@ fn find_codex_app(home_directory: &Path) -> Option<PathBuf> {
 
 fn send_process_group_signal(pid: u32, signal: i32) {
     unsafe {
-        if libc::kill(-(pid as i32), signal) != 0 {
-            libc::kill(pid as i32, signal);
-        }
+        libc::kill(-(pid as i32), signal);
     }
 }
 
@@ -215,6 +213,36 @@ fn stop_recorded_child(state: &LauncherState) {
     let _ = fs::remove_file(&state.pid_record_path);
 }
 
+fn cleanup_recorded_ai_turns(app: &AppHandle, state: &LauncherState) -> Result<(), String> {
+    let resource_directory = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?;
+    let node_path = std::env::current_exe()
+        .map_err(|error| error.to_string())?
+        .parent()
+        .ok_or_else(|| "无法定位 App 可执行文件目录".to_string())?
+        .join("node");
+    let cleanup_script = resource_directory.join("app/server/ai-turn-process-registry.mjs");
+    let registry_directory = state.data_directory.join("ai-turn-processes");
+    let output = StdCommand::new(node_path)
+        .arg(cleanup_script)
+        .arg("--cleanup")
+        .arg(registry_directory)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if message.is_empty() {
+            "无法清理遗留 AI turn".to_string()
+        } else {
+            message
+        })
+    }
+}
+
 fn write_pid_record(
     state: &LauncherState,
     pid: u32,
@@ -247,6 +275,9 @@ fn stop_managed_child_locked(app: &AppHandle, state: &Arc<LauncherState>) {
         append_log(state, &format!("Stopping launcher child {pid}"));
         terminate_process_group(pid);
         clear_pid_record(state, pid);
+    }
+    if let Err(error) = cleanup_recorded_ai_turns(app, state) {
+        append_log(state, &format!("AI turn cleanup failed: {error}"));
     }
     update_snapshot(app, state, |snapshot| {
         snapshot.phase = "stopped".into();
@@ -297,6 +328,8 @@ fn start_launcher_locked(
         return Ok(state.snapshot.lock().unwrap().clone());
     }
 
+    stop_recorded_child(state);
+    cleanup_recorded_ai_turns(app, state)?;
     let home_directory = app.path().home_dir().map_err(|error| error.to_string())?;
     let codex_app = find_codex_app(&home_directory).ok_or_else(|| {
         "未找到官方 ChatGPT.app 或 Codex.app。请先安装到 Applications 文件夹。".to_string()
@@ -312,7 +345,6 @@ fn start_launcher_locked(
         .parent()
         .ok_or_else(|| "无法定位 App 可执行文件目录".to_string())?
         .join("node");
-    stop_recorded_child(state);
     let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     state.intentional_stop.store(false, Ordering::SeqCst);
     update_snapshot(app, state, |snapshot| {
@@ -402,13 +434,17 @@ fn start_launcher_locked(
             &event_state,
             &format!("Launcher child {pid} exited: {status:?}"),
         );
-        terminate_process_group(pid);
+        let lifecycle = event_state.lifecycle.lock().unwrap();
         if event_state.generation.load(Ordering::SeqCst) != generation {
             return;
         }
         let mut current_child = event_state.child.lock().unwrap();
         if *current_child != Some(pid) {
             return;
+        }
+        terminate_process_group(pid);
+        if let Err(error) = cleanup_recorded_ai_turns(&event_app, &event_state) {
+            append_log(&event_state, &format!("AI turn cleanup failed: {error}"));
         }
         *current_child = None;
         drop(current_child);
@@ -421,16 +457,20 @@ fn start_launcher_locked(
                 snapshot.message = "任务面板进程已退出，正在恢复…".into();
             }
         });
+        drop(lifecycle);
         if intentional {
             return;
         }
         thread::sleep(Duration::from_secs(2));
+        let lifecycle = event_state.lifecycle.lock().unwrap();
         if event_state.intentional_stop.load(Ordering::SeqCst)
             || event_state.generation.load(Ordering::SeqCst) != generation
         {
             return;
         }
-        if let Err(error) = start_launcher(&event_app, &event_state) {
+        let recovery = start_launcher_locked(&event_app, &event_state);
+        drop(lifecycle);
+        if let Err(error) = recovery {
             append_log(&event_state, &format!("Launcher recovery failed: {error}"));
             update_snapshot(&event_app, &event_state, |snapshot| {
                 snapshot.phase = "error".into();
