@@ -9,7 +9,7 @@ Codex Taskboard 是一个本地优先的任务面板。它可在浏览器中运�
 1. 用户打开 `Codex Taskboard.app`。
 2. App 从自身资源启动 Node.js 和本地任务面板服务。服务只监听 `127.0.0.1:47823`。
 3. App 启动官方 Codex/ChatGPT 客户端的独立窗口，并通过 CDP 注入任务面板入口。
-4. 用户在 Codex 侧栏打开任务面板。App 状态页用中文显示服务启动、等待客户端、等待面板注入和更新结果。
+4. 用户在 Codex 侧栏打开任务面板。启动器不显示主窗口或 Dock 图标；启动、等待和检查更新的结果只写入日志，只有发现更新时才显示原生确认弹窗。
 5. 用户修改任务、评论或附件。服务把数据写入 `~/Library/Application Support/Codex Taskboard`，并把变化推送到所有已打开的面板。
 
 App 不修改官方客户端的 `app.asar`。App 自带 Node.js、服务、Web 界面、注入器、Skill 和 `taskctl`，所以安装机不需要系统 Node.js 或本仓库。
