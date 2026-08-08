@@ -62,7 +62,7 @@ https://github.com/chuspeeism/dashi-taskboard/releases/latest/download/latest.js
 
 Tauri Updater 先用 App 内置公钥验证 `.app.tar.gz` 的签名，再安装更新。Updater 私钥只存在于 GitHub Actions Secret 中。Developer ID 签名和 Apple 公证用于让 Gatekeeper 验证 App 与 DMG；它们不能替代 Updater 签名。
 
-Draft Release 不会成为 GitHub 的 latest Release。只有完成验证并手动发布 Draft 后，已安装 App 才会看到该版本。
+Draft Release 不会成为 GitHub 的 latest Release。审核人批准受保护的 promotion job 后，工作流会重新下载并验证 Draft 资产，再发布和锁定 Release。只有 promotion 成功后，已安装 App 才会看到该版本。
 
 ## 本地开发
 
@@ -108,7 +108,7 @@ npm start
 
 ## 发布 macOS App
 
-`.github/workflows/check.yml` 在 PR 中使用 macOS runner 准备内置 Node，并构建真实的 unsigned universal App bundle。`.github/workflows/release-macos.yml` 只接受 `app-v*` 标签推送。它验证标签提交属于 `main`，并确认 `package.json`、`Cargo.toml` 和 `tauri.conf.json` 的版本一致，然后使用 Node.js 22、Rust 1.88 和两个 macOS Rust target 构建 universal 包并创建 GitHub Draft Release。所有第三方 Action 都锁定到完整提交 SHA；工作流不会自动发布 Draft。
+`.github/workflows/check.yml` 在 PR 中使用 macOS runner 准备内置 Node，并构建真实的 unsigned universal App bundle。`.github/workflows/release-macos.yml` 只接受 `app-v*` 标签推送。构建 job 验证标签提交属于 `main`，并确认 `package.json`、`Cargo.toml` 和 `tauri.conf.json` 的版本一致，然后使用 Node.js 22、Rust 1.88 和两个 macOS Rust target 构建 universal 包并创建 GitHub Draft Release。它同时保存 4 个上传资产的可信 SHA-256 manifest。独立的 `macos-release` promotion job 从 Draft 重新下载全部资产，对比 manifest，并重新执行签名、公证、Team ID、Updater 公钥、`latest.json` 和 App/DMG/updater 内容一致性验证。验证通过后，该 job 发布 Release，并确认 Release 已不可变且最终资产摘要未变化。所有第三方 Action 都锁定到完整提交 SHA。
 
 内置 Node 版本固定为 `22.23.2`。arm64 与 x64 安装包的 SHA-256 已写入 `scripts/prepare-tauri-app.mjs`，构建不会信任与安装包同源、临时下载的校验清单。
 
@@ -130,13 +130,21 @@ npm start
 
 `APPLE_API_KEY_PATH` 不是仓库 Secret。工作流把 `APPLE_API_PRIVATE_KEY` 写入 runner 的临时文件，再把该文件路径设为 `APPLE_API_KEY_PATH`。构建结束后，工作流删除 P8、P12 和临时 keychain。
 
-`GITHUB_TOKEN` 由 GitHub Actions 自动提供。工作流只给它 `contents: write` 权限，用于创建 Draft Release 和上传资产。
+在 `macos-release` environment secrets 中配置 `RELEASE_RULESET_TOKEN`。它必须是仅限本仓库的 fine-grained PAT，并具有 Repository Administration 写权限，使 GitHub API 返回 `bypass_actors`，并允许 promotion 读取 immutable releases 设置。promotion 只把该 token 用于这两项管理状态查询；Secret 缺失、字段不可见或 API 权限不足时，发布会失败。
+
+`GITHUB_TOKEN` 由 GitHub Actions 自动提供。工作流给它 `actions: read`、`contents: write` 和 `deployments: write` 权限，用于下载可信 manifest、创建 Draft、运行受保护的 promotion 和发布 Release。
+
+发布前还必须完成以下仓库设置：
+
+- 启用覆盖当前 `app-v*` 标签的 active tag ruleset。`exclude` 必须为空，`bypass_actors` 必须为空，并启用禁止更新和禁止删除规则。
+- 创建 `macos-release` environment，配置必需审核人，并启用“禁止发起人自行审核”。
+- 启用 immutable releases。promotion 在发布前检查此设置，并在发布后校验 Release API 的 `immutable: true`、Release attestation 和每个本地资产的 attestation。
 
 ### 发布 `app-v0.2.0`
 
 1. 在 PR 中把 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml` 和 `src-tauri/tauri.conf.json` 的版本同步为 `0.2.0`。
 2. 合并已审核的 PR。
-3. 确认所有 GitHub Secrets 已配置。
+3. 确认所有 GitHub Secrets 和上述仓库发布设置已配置。
 4. 在已合并提交上创建并推送标签：
 
    ```bash
@@ -144,8 +152,9 @@ npm start
    git push origin app-v0.2.0
    ```
 
-5. 等待工作流创建 Draft Release。不要直接发布。
-6. 完成下方检查后，人工发布 Draft。
+5. 按环境保护提示批准构建 job，并等待工作流创建 Draft Release。不要在 GitHub Release 页面直接发布。
+6. 完成下方检查后，批准等待中的 `macos-release` promotion job。
+7. 等待 promotion 重新下载并验证全部远程资产、发布 Release，并确认最终 Release 和资产不可变。
 
 ### Draft Release 检查清单
 
@@ -158,7 +167,7 @@ npm start
 - 新建或修改任务后，重启 App，数据和附件仍存在。
 - 启动时能读取 `latest.json`；没有更新时静默，有更新时只显示一次确认弹窗。首个真实升级验证使用 `0.2.0 → 0.2.1`。
 
-如果 Draft 检查失败，不发布它。修复代码并走新 PR，再用新的补丁版本标签创建 Draft。已发布版本回滚时，只替换 App；保留 Application Support 数据，并发布更高版本号的修复版本。
+如果 Draft 检查失败，不要批准 promotion，也不要手动发布。修复代码并走新 PR，再用新的补丁版本标签创建 Draft。已发布版本回滚时，只替换 App；保留 Application Support 数据，并发布更高版本号的修复版本。
 
 ## 使用 `taskctl`
 

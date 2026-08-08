@@ -6,6 +6,7 @@ on:
       - "app-v*"
 
 permissions:
+  actions: read
   contents: write
   deployments: write
 
@@ -33,7 +34,7 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Validate immutable release tag and versions
+      - name: Validate release tag and versions
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -60,39 +61,6 @@ jobs:
           fi
           if [[ "$REMOTE_TAG_COMMIT" != "$GITHUB_SHA" ]]; then
             echo "远程发布标签与当前工作流提交不一致。" >&2
-            exit 1
-          fi
-
-          TAG_RULE_PROTECTED=false
-          while IFS= read -r RULESET_ID; do
-            RULESET="$(gh api "repos/$GITHUB_REPOSITORY/rulesets/$RULESET_ID")"
-            if jq -e '
-              .target == "tag" and
-              .enforcement == "active" and
-              ((.bypass_actors // []) | length == 0) and
-              ((.conditions.ref_name.include // []) | index("refs/tags/app-v*") != null) and
-              ((.rules | map(.type)) | index("update") != null) and
-              ((.rules | map(.type)) | index("deletion") != null)
-            ' <<< "$RULESET" >/dev/null; then
-              TAG_RULE_PROTECTED=true
-              break
-            fi
-          done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/rulesets?targets=tag&per_page=100" --jq '.[].id')
-          if [[ "$TAG_RULE_PROTECTED" != "true" ]]; then
-            echo "发布前必须启用 app-v* 标签规则：禁止更新、禁止删除，并且不能配置绕过者。" >&2
-            exit 1
-          fi
-
-          RELEASE_ENVIRONMENT="$(gh api "repos/$GITHUB_REPOSITORY/environments/macos-release")"
-          if ! jq -e '
-            (.protection_rules // [])
-            | any(
-              .type == "required_reviewers" and
-              .prevent_self_review == true and
-              ((.reviewers // []) | length > 0)
-            )
-          ' <<< "$RELEASE_ENVIRONMENT" >/dev/null; then
-            echo "macos-release 环境必须启用必需审核人，并禁止发起人自行审核。" >&2
             exit 1
           fi
 
@@ -315,22 +283,50 @@ jobs:
             exit 1
           fi
 
+      - name: Create trusted release asset manifest
+        run: |
+          set -euo pipefail
+          BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
+          RELEASE_ASSETS="$RUNNER_TEMP/release-assets"
+          MANIFEST_ROOT="$RUNNER_TEMP/release-manifest"
+          mkdir -p "$RELEASE_ASSETS" "$MANIFEST_ROOT"
+          cp "$BUNDLE_ROOT/dmg/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg" "$RELEASE_ASSETS/"
+          cp "$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" "$RELEASE_ASSETS/"
+          cp "$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" "$RELEASE_ASSETS/"
+          cp "$BUNDLE_ROOT/release/latest.json" "$RELEASE_ASSETS/"
+          (
+            cd "$RELEASE_ASSETS"
+            shasum -a 256 \
+              "Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg" \
+              "Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
+              "Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" \
+              "latest.json" > "$MANIFEST_ROOT/release-assets.sha256"
+          )
+
+      - name: Preserve trusted release asset manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-release-${{ github.sha }}-sha256
+          path: ${{ runner.temp }}/release-manifest/release-assets.sha256
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Create draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
+          RELEASE_ASSETS="$RUNNER_TEMP/release-assets"
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --target "$GITHUB_SHA" \
             --draft \
             --title "Codex Taskboard $RELEASE_TAG" \
-            --notes "macOS universal 安装包。此 Release 是待实机验证的 Draft，验证完成后再发布。" \
-            "$BUNDLE_ROOT/dmg/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg" \
-            "$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
-            "$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" \
-            "$BUNDLE_ROOT/release/latest.json"
+            --notes "macOS universal 安装包。此 Release 等待受保护的 promotion job 完成远程复验后发布。" \
+            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg" \
+            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
+            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" \
+            "$RELEASE_ASSETS/latest.json"
 
           REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
           if [[ -z "$REMOTE_TAG_COMMIT" ]]; then
@@ -357,3 +353,286 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/codex-taskboard-signing.keychain-db" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/developer-id.p12"
           rm -f "$RUNNER_TEMP/app-store-connect.p8"
+
+  promote-release:
+    name: Verify and publish immutable macOS release
+    needs: release-macos
+    runs-on: macos-latest
+    timeout-minutes: 30
+    environment: macos-release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+
+      - name: Validate protected release promotion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RULESET_TOKEN: ${{ secrets.RELEASE_RULESET_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          API_VERSION_HEADER="X-GitHub-Api-Version: 2026-03-10"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [[ "$(git rev-parse HEAD)" != "$GITHUB_SHA" || "$RELEASE_TAG" != "app-v$PACKAGE_VERSION" ]]; then
+            echo "promotion checkout、标签和应用版本不一致。" >&2
+            exit 1
+          fi
+
+          if [[ -z "$RULESET_TOKEN" ]]; then
+            echo "缺少 RELEASE_RULESET_TOKEN，无法确认标签 Ruleset 的绕过者。" >&2
+            exit 1
+          fi
+          if ! RULESET_IDS="$(GH_TOKEN="$RULESET_TOKEN" gh api \
+            --header "$API_VERSION_HEADER" \
+            --paginate \
+            "repos/$GITHUB_REPOSITORY/rulesets?targets=tag&per_page=100" \
+            --jq '.[].id')"; then
+            echo "无法读取标签 Ruleset。" >&2
+            exit 1
+          fi
+
+          TAG_RULE_PROTECTED=false
+          while IFS= read -r RULESET_ID; do
+            [[ -n "$RULESET_ID" ]] || continue
+            if ! RULESET="$(GH_TOKEN="$RULESET_TOKEN" gh api \
+              --header "$API_VERSION_HEADER" \
+              "repos/$GITHUB_REPOSITORY/rulesets/$RULESET_ID")"; then
+              echo "无法读取标签 Ruleset $RULESET_ID。" >&2
+              exit 1
+            fi
+            if jq -e --arg tag_ref "refs/tags/$RELEASE_TAG" '
+              .target == "tag" and
+              .enforcement == "active" and
+              has("bypass_actors") and
+              ((.bypass_actors | type) == "array") and
+              ((.bypass_actors | length) == 0) and
+              ((.conditions.ref_name.include | type) == "array") and
+              any(
+                .conditions.ref_name.include[]?;
+                . == $tag_ref or
+                (
+                  . == "refs/tags/app-v*" and
+                  ($tag_ref | test("^refs/tags/app-v[^/]*$"))
+                )
+              ) and
+              ((.conditions.ref_name.exclude | type) == "array") and
+              ((.conditions.ref_name.exclude | length) == 0) and
+              ((.rules | type) == "array") and
+              any(.rules[]?; .type == "update") and
+              any(.rules[]?; .type == "deletion")
+            ' <<< "$RULESET" >/dev/null; then
+              TAG_RULE_PROTECTED=true
+              break
+            fi
+          done <<< "$RULESET_IDS"
+          if [[ "$TAG_RULE_PROTECTED" != "true" ]]; then
+            echo "发布前必须启用覆盖当前标签的规则：exclude 为空、禁止更新和删除，并且 bypass_actors 字段可见且为空。" >&2
+            exit 1
+          fi
+
+          if ! RELEASE_ENVIRONMENT="$(gh api --header "$API_VERSION_HEADER" \
+            "repos/$GITHUB_REPOSITORY/environments/macos-release")"; then
+            echo "无法读取 macos-release 环境保护设置。" >&2
+            exit 1
+          fi
+          if ! jq -e '
+            (.protection_rules // [])
+            | any(
+              .type == "required_reviewers" and
+              .prevent_self_review == true and
+              ((.reviewers // []) | length > 0)
+            )
+          ' <<< "$RELEASE_ENVIRONMENT" >/dev/null; then
+            echo "macos-release 环境必须启用必需审核人，并禁止发起人自行审核。" >&2
+            exit 1
+          fi
+
+          if ! IMMUTABLE_RELEASES="$(GH_TOKEN="$RULESET_TOKEN" gh api \
+            --header "$API_VERSION_HEADER" \
+            "repos/$GITHUB_REPOSITORY/immutable-releases")"; then
+            echo "仓库必须在 promotion 前启用 immutable releases。" >&2
+            exit 1
+          fi
+          if ! jq -e '.enabled == true' <<< "$IMMUTABLE_RELEASES" >/dev/null; then
+            echo "仓库的 immutable releases 未启用。" >&2
+            exit 1
+          fi
+
+          REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
+          if [[ -z "$REMOTE_TAG_COMMIT" ]]; then
+            REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')"
+          fi
+          if [[ "$REMOTE_TAG_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "promotion 前远程发布标签与构建提交不一致。" >&2
+            exit 1
+          fi
+
+      - name: Restore trusted release asset manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: macos-release-${{ github.sha }}-sha256
+          path: ${{ runner.temp }}/trusted-release-manifest
+
+      - name: Download and verify Draft Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          API_VERSION_HEADER="X-GitHub-Api-Version: 2026-03-10"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          MANIFEST_PATH="$RUNNER_TEMP/trusted-release-manifest/release-assets.sha256"
+          DRAFT_ASSETS="$RUNNER_TEMP/draft-release-assets"
+          EXPECTED_ASSETS="$RUNNER_TEMP/expected-release-assets.txt"
+          ACTUAL_ASSETS="$RUNNER_TEMP/actual-release-assets.txt"
+
+          DRAFT_RELEASE="$(gh api --header "$API_VERSION_HEADER" \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+          if ! jq -e \
+            --arg tag "$RELEASE_TAG" \
+            --arg target "$GITHUB_SHA" \
+            '.tag_name == $tag and .target_commitish == $target and .draft == true' \
+            <<< "$DRAFT_RELEASE" >/dev/null; then
+            echo "promotion 只能处理指向构建提交的 Draft Release。" >&2
+            exit 1
+          fi
+
+          mkdir -p "$DRAFT_ASSETS"
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$DRAFT_ASSETS"
+          sed -E 's/^[0-9a-f]{64}  //' "$MANIFEST_PATH" | LC_ALL=C sort > "$EXPECTED_ASSETS"
+          node -e \
+            'const fs=require("node:fs"); for (const name of fs.readdirSync(process.argv[1]).sort()) console.log(name)' \
+            "$DRAFT_ASSETS" > "$ACTUAL_ASSETS"
+          diff -u "$EXPECTED_ASSETS" "$ACTUAL_ASSETS"
+          (
+            cd "$DRAFT_ASSETS"
+            shasum -a 256 --check "$MANIFEST_PATH"
+          )
+
+          UPDATER_ROOT="$RUNNER_TEMP/remote-updater"
+          mkdir -p "$UPDATER_ROOT"
+          tar -xzf \
+            "$DRAFT_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
+            -C "$UPDATER_ROOT"
+          npm run app:verify-release -- \
+            "$UPDATER_ROOT/Codex Taskboard.app" \
+            "$DRAFT_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg" \
+            "$DRAFT_ASSETS" \
+            "$RELEASE_TAG"
+
+      - name: Publish verified Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          API_VERSION_HEADER="X-GitHub-Api-Version: 2026-03-10"
+          MANIFEST_PATH="$RUNNER_TEMP/trusted-release-manifest/release-assets.sha256"
+          DRAFT_RELEASE="$(gh api --header "$API_VERSION_HEADER" \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+          EXPECTED_ASSET_COUNT="$(wc -l < "$MANIFEST_PATH" | tr -d ' ')"
+
+          if ! jq -e \
+            --arg tag "$RELEASE_TAG" \
+            --arg target "$GITHUB_SHA" \
+            --argjson asset_count "$EXPECTED_ASSET_COUNT" \
+            '.tag_name == $tag and
+             .target_commitish == $target and
+             .draft == true and
+             (.assets | length) == $asset_count and
+             all(.assets[]; .state == "uploaded")' \
+            <<< "$DRAFT_RELEASE" >/dev/null; then
+            echo "发布前 Draft Release 或资产集合发生变化。" >&2
+            exit 1
+          fi
+
+          while read -r SHA256 ASSET_NAME; do
+            if ! jq -e \
+              --arg name "$ASSET_NAME" \
+              --arg digest "sha256:$SHA256" \
+              'any(.assets[]; .name == $name and .digest == $digest)' \
+              <<< "$DRAFT_RELEASE" >/dev/null; then
+              echo "发布前资产 $ASSET_NAME 的 SHA-256 与构建 manifest 不一致。" >&2
+              exit 1
+            fi
+          done < "$MANIFEST_PATH"
+
+          REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
+          if [[ -z "$REMOTE_TAG_COMMIT" ]]; then
+            REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')"
+          fi
+          if [[ "$REMOTE_TAG_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "发布前远程标签与构建提交不一致。" >&2
+            exit 1
+          fi
+
+          RELEASE_ID="$(jq -r '.id' <<< "$DRAFT_RELEASE")"
+          gh api --header "$API_VERSION_HEADER" \
+            --method PATCH \
+            -F draft=false \
+            "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" >/dev/null
+
+      - name: Verify final immutable Release and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          API_VERSION_HEADER="X-GitHub-Api-Version: 2026-03-10"
+          MANIFEST_PATH="$RUNNER_TEMP/trusted-release-manifest/release-assets.sha256"
+          FINAL_RELEASE="$(gh api --header "$API_VERSION_HEADER" \
+            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+          EXPECTED_ASSET_COUNT="$(wc -l < "$MANIFEST_PATH" | tr -d ' ')"
+
+          if ! jq -e \
+            --arg tag "$RELEASE_TAG" \
+            --arg target "$GITHUB_SHA" \
+            --argjson asset_count "$EXPECTED_ASSET_COUNT" \
+            '.tag_name == $tag and
+             .target_commitish == $target and
+             .draft == false and
+             .immutable == true and
+             .published_at != null and
+             (.assets | length) == $asset_count and
+             all(.assets[]; .state == "uploaded")' \
+            <<< "$FINAL_RELEASE" >/dev/null; then
+            echo "最终 Release 未发布、未锁定或资产集合不正确。" >&2
+            exit 1
+          fi
+
+          while read -r SHA256 ASSET_NAME; do
+            if ! jq -e \
+              --arg name "$ASSET_NAME" \
+              --arg digest "sha256:$SHA256" \
+              'any(.assets[]; .name == $name and .digest == $digest)' \
+              <<< "$FINAL_RELEASE" >/dev/null; then
+              echo "最终资产 $ASSET_NAME 的 SHA-256 与构建 manifest 不一致。" >&2
+              exit 1
+            fi
+          done < "$MANIFEST_PATH"
+
+          gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+          while read -r _SHA256 ASSET_NAME; do
+            FILE="$RUNNER_TEMP/draft-release-assets/$ASSET_NAME"
+            gh release verify-asset "$RELEASE_TAG" "$FILE" --repo "$GITHUB_REPOSITORY"
+          done < "$MANIFEST_PATH"
+
+          REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
+          if [[ -z "$REMOTE_TAG_COMMIT" ]]; then
+            REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')"
+          fi
+          if [[ "$REMOTE_TAG_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "发布后远程标签与构建提交不一致。" >&2
+            exit 1
+          fi
