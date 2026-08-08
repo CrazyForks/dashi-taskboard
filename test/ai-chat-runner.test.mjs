@@ -325,6 +325,31 @@ test("malformed Codex JSONL fails the run", async () => {
   }
 });
 
+test("turn owner registration failure settles the created run", async () => {
+  const fixture = await createFixture();
+  try {
+    const registryDirectory = path.join(fixture.directory, "ai-turn-processes");
+    await writeFile(registryDirectory, "not a directory");
+    const thread = await fixture.service.createThread({ projectId: "project" });
+
+    await assert.rejects(
+      fixture.service.startTurn(thread.id, { message: "must fail before Codex starts" }),
+    );
+
+    const [run] = fixture.database.listAiChatRuns(thread.id);
+    assert.equal(run.status, "failed");
+    assert.ok(run.finishedAt);
+    assert.equal(
+      fixture.service.getThreadSnapshot(thread.id).events.some(
+        (event) => event.runId === run.id && event.role === "error",
+      ),
+      true,
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("parser and event callback failures kill a SIGTERM-resistant process group", async () => {
   const fixture = await createFixture();
   try {

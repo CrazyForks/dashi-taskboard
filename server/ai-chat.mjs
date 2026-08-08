@@ -288,46 +288,68 @@ export class AiChatService {
       let startedThreadId = null;
       let terminalOutcome = null;
       let terminalError = "";
-      const { child, completion, terminate } = await spawnCodexTurn({
-        executable: this.codexExecutable,
-        args,
-        prompt,
-        env: this.processEnv,
-        processOwner: {
-          ...this.processRegistry,
-          owner: `run:${run.id}`,
-        },
-        onRawEvent: (raw) => {
-          const normalized = normalizeCodexEvent(raw);
-          if (!normalized) return;
-          if (normalized.kind === "thread.started") {
-            if (
-              (resumingThreadId && normalized.threadId !== resumingThreadId)
-              || (startedThreadId && normalized.threadId !== startedThreadId)
-            ) {
-              throw new Error("Codex returned an unexpected thread id");
+      let spawnedTurn;
+      try {
+        spawnedTurn = await spawnCodexTurn({
+          executable: this.codexExecutable,
+          args,
+          prompt,
+          env: this.processEnv,
+          processOwner: {
+            ...this.processRegistry,
+            owner: `run:${run.id}`,
+          },
+          onRawEvent: (raw) => {
+            const normalized = normalizeCodexEvent(raw);
+            if (!normalized) return;
+            if (normalized.kind === "thread.started") {
+              if (
+                (resumingThreadId && normalized.threadId !== resumingThreadId)
+                || (startedThreadId && normalized.threadId !== startedThreadId)
+              ) {
+                throw new Error("Codex returned an unexpected thread id");
+              }
+              startedThreadId = normalized.threadId;
+              this.database.updateAiChatThread(threadId, { codexThreadId: normalized.threadId });
+              return;
             }
-            startedThreadId = normalized.threadId;
-            this.database.updateAiChatThread(threadId, { codexThreadId: normalized.threadId });
-            return;
-          }
-          const event = this.database.insertAiChatEvent({
-            threadId,
-            runId: run.id,
-            type: normalized.type,
-            role: normalized.role,
-            content: normalized.content,
-            data: normalized.data,
-          });
-          if (raw.type === "turn.completed" && terminalOutcome === null) {
-            terminalOutcome = "completed";
-          } else if (raw.type === "turn.failed" || raw.type === "error") {
-            terminalOutcome = "failed";
-            terminalError ||= normalized.content;
-          }
-          this.#emit(threadId, { type: "ai.event", event });
-        },
-      });
+            const event = this.database.insertAiChatEvent({
+              threadId,
+              runId: run.id,
+              type: normalized.type,
+              role: normalized.role,
+              content: normalized.content,
+              data: normalized.data,
+            });
+            if (raw.type === "turn.completed" && terminalOutcome === null) {
+              terminalOutcome = "completed";
+            } else if (raw.type === "turn.failed" || raw.type === "error") {
+              terminalOutcome = "failed";
+              terminalError ||= normalized.content;
+            }
+            this.#emit(threadId, { type: "ai.event", event });
+          },
+        });
+      } catch (error) {
+        const publicError = cappedError(error) || "Codex turn failed to start";
+        const errorEvent = this.database.insertAiChatEvent({
+          threadId,
+          runId: run.id,
+          type: "error",
+          role: "error",
+          content: publicError,
+          data: { status: "failed" },
+        });
+        this.#emit(threadId, { type: "ai.event", event: errorEvent });
+        const failedRun = this.database.updateAiChatRun(run.id, {
+          status: "failed",
+          error: publicError,
+          finishedAt: new Date().toISOString(),
+        });
+        this.#emit(threadId, { type: "ai.run", run: failedRun });
+        throw error;
+      }
+      const { child, completion, terminate } = spawnedTurn;
 
       const active = { child, terminate, threadId, interrupted: false, temporaryDirectory };
       this.active.set(run.id, active);
