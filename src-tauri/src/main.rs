@@ -117,6 +117,12 @@ fn send_sigterm(pid: u32) {
     }
 }
 
+fn send_sigkill(pid: u32) {
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
 fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while process_is_running(pid) && Instant::now() < deadline {
@@ -163,7 +169,14 @@ fn stop_stale_processes(state: &LauncherState) {
         if is_launcher || is_service {
             append_log(state, &format!("Stopping stale taskboard process {pid}"));
             send_sigterm(pid);
-            let _ = wait_for_process_exit(pid, STOP_TIMEOUT);
+            if !wait_for_process_exit(pid, STOP_TIMEOUT) {
+                append_log(
+                    state,
+                    &format!("Force stopping stale taskboard process {pid}"),
+                );
+                send_sigkill(pid);
+                let _ = wait_for_process_exit(pid, Duration::from_secs(1));
+            }
         }
     }
 }
@@ -175,7 +188,10 @@ fn stop_recorded_child(state: &LauncherState) {
     if let Some(record) = record {
         if process_matches_record(&record) {
             send_sigterm(record.pid);
-            let _ = wait_for_process_exit(record.pid, STOP_TIMEOUT);
+            if !wait_for_process_exit(record.pid, STOP_TIMEOUT) && process_matches_record(&record) {
+                send_sigkill(record.pid);
+                let _ = wait_for_process_exit(record.pid, Duration::from_secs(1));
+            }
         }
     }
     let _ = fs::remove_file(&state.pid_record_path);
@@ -283,7 +299,10 @@ fn start_launcher(app: &AppHandle, state: &Arc<LauncherState>) -> Result<Launche
         .spawn()
         .map_err(|error| error.to_string())?;
     let pid = child.pid();
-    write_pid_record(state, pid, node_path, injector_path)?;
+    if let Err(error) = write_pid_record(state, pid, node_path, injector_path) {
+        let _ = child.kill();
+        return Err(error);
+    }
     *state.child.lock().unwrap() = Some(child);
     let snapshot = update_snapshot(app, state, |snapshot| {
         snapshot.child_pid = Some(pid);
@@ -447,9 +466,25 @@ async fn install_update(
     stop_managed_child(app, state);
     if let Err(error) = update.install(&bytes) {
         append_log(&state, &format!("Update installation failed: {error}"));
+        let restart_error = start_launcher(app, state).err();
+        if let Some(restart_error) = &restart_error {
+            append_log(
+                &state,
+                &format!("Taskboard restart after update failure failed: {restart_error}"),
+            );
+        } else {
+            append_log(
+                &state,
+                "Taskboard restarted after update installation failure",
+            );
+        }
         update_snapshot(app, state, |snapshot| {
             snapshot.update_message = format!("更新安装失败：{error}");
             snapshot.update_available = true;
+            if let Some(restart_error) = &restart_error {
+                snapshot.phase = "error".into();
+                snapshot.message = format!("任务面板恢复失败：{restart_error}");
+            }
         });
         return Err(error.to_string());
     }

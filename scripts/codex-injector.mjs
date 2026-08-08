@@ -202,7 +202,10 @@ function createTaskboardSupervisor({ detached }) {
     ]);
     if (!exited && managedChild.exitCode === null) {
       managedChild.kill("SIGKILL");
-      await exitPromise;
+      await Promise.race([
+        exitPromise,
+        new Promise((resolve) => setTimeout(resolve, 1_000)),
+      ]);
     }
   }
 
@@ -1291,7 +1294,22 @@ async function main() {
           console.log(JSON.stringify({ injected: results }, null, 2));
         }
       } catch (error) {
-        if (codexProcess && codexProcess.exitCode !== null) break;
+        const launchedCodexExited = codexProcess
+          && (codexProcess.exitCode !== null || codexProcess.signalCode !== null);
+        if (launchedCodexExited) {
+          console.error("Codex exited; restarting it for the taskboard launcher.");
+          injectedTargets.forEach((connection) => connection.close());
+          injectedTargets.clear();
+          codexProcess = null;
+          try {
+            codexProcess = launchCodex(options.appPath, options.port);
+            await waitUntilReachable(cdpVersionUrl, 30_000);
+            openPending = options.open;
+          } catch (restartError) {
+            console.error(`Waiting to restart Codex: ${restartError.message}`);
+          }
+          continue;
+        }
         console.error(`Waiting for Codex renderer: ${error.message}`);
       }
     }
