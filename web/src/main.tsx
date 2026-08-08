@@ -2,13 +2,17 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { postEmbeddedHostMessage } from "./embeddedHost.mjs";
-import { flushTaskboardStorage, initializeTaskboardStorage } from "./storage";
+import {
+  flushTaskboardStorage,
+  flushTaskboardStorageForUnload,
+  initializeTaskboardStorage,
+} from "./storage";
 import "./styles.css";
 
 async function main() {
   await initializeTaskboardStorage();
   window.addEventListener("pagehide", () => {
-    void flushTaskboardStorage();
+    flushTaskboardStorageForUnload();
   });
   const root = createRoot(document.getElementById("root")!);
   function stopForStorageFlush(requestId: string) {

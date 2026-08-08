@@ -7,6 +7,7 @@ interface PendingStorageWrite {
 
 const RETRY_DELAY_MS = 250;
 const MAX_RETRY_DELAY_MS = 5_000;
+const UNLOAD_KEEPALIVE_BUDGET_BYTES = 64 * 1024;
 const memoryStorage = new Map<string, string>();
 const pendingWrites = new Map<string, PendingStorageWrite>();
 const storageStatusListeners = new Set<() => void>();
@@ -37,9 +38,10 @@ function waitForRetry(delay: number) {
 
 async function drainStorageWrites() {
   let retryDelay = RETRY_DELAY_MS;
+  let permanentlyFailed = false;
   while (pendingWrites.size > 0) {
     const writes = [...pendingWrites.entries()];
-    let failed = false;
+    let retryableFailure = false;
     setStorageStatus("pending");
     for (const [key, write] of writes) {
       try {
@@ -47,16 +49,26 @@ async function drainStorageWrites() {
           method: "PATCH",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ key, value: write.value }),
-          keepalive: true,
         });
-        if (response.status !== 204) throw new Error(`Taskboard storage returned ${response.status}`);
-        if (pendingWrites.get(key)?.revision === write.revision) pendingWrites.delete(key);
+        if (response.status === 204) {
+          if (pendingWrites.get(key)?.revision === write.revision) pendingWrites.delete(key);
+          continue;
+        }
+        console.error(new Error(`Taskboard storage returned ${response.status}`));
+        if (response.status >= 400 && response.status < 500) {
+          if (pendingWrites.get(key)?.revision === write.revision) {
+            pendingWrites.delete(key);
+            permanentlyFailed = true;
+          }
+        } else {
+          retryableFailure = true;
+        }
       } catch (error) {
-        failed = true;
+        retryableFailure = true;
         console.error(error);
       }
     }
-    if (failed && pendingWrites.size > 0) {
+    if (retryableFailure && pendingWrites.size > 0) {
       setStorageStatus("failed");
       await waitForRetry(retryDelay);
       retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY_MS);
@@ -64,7 +76,7 @@ async function drainStorageWrites() {
       retryDelay = RETRY_DELAY_MS;
     }
   }
-  setStorageStatus("persisted");
+  setStorageStatus(permanentlyFailed ? "failed" : "persisted");
 }
 
 function ensureStorageDrain() {
@@ -98,6 +110,23 @@ export async function flushTaskboardStorage(): Promise<void> {
     wakeRetry?.();
     if (pendingWrites.size > 0) await ensureStorageDrain();
   } while (pendingWrites.size > 0);
+}
+
+export function flushTaskboardStorageForUnload(): void {
+  if (localStorageBackend || !serverBacked) return;
+  let remainingBytes = UNLOAD_KEEPALIVE_BUDGET_BYTES;
+  for (const [key, write] of pendingWrites) {
+    const body = JSON.stringify({ key, value: write.value });
+    const bodyBytes = new TextEncoder().encode(body).byteLength;
+    if (bodyBytes > remainingBytes) continue;
+    remainingBytes -= bodyBytes;
+    void fetch(new URL("api/client-storage", document.baseURI), {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body,
+      keepalive: true,
+    }).catch((error) => console.error(error));
+  }
 }
 
 export async function initializeTaskboardStorage() {
