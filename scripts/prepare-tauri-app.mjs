@@ -23,6 +23,10 @@ if (process.platform !== "darwin") {
 
 const nodeVersion = "22.23.2";
 const nodeArchitectures = ["arm64", "x64"];
+const nodeArchiveSha256 = {
+  arm64: "61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6",
+  x64: "58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026",
+};
 const supportedTargets = new Set([
   "aarch64-apple-darwin",
   "x86_64-apple-darwin",
@@ -83,24 +87,23 @@ async function download(url, destination) {
   await rename(temporaryPath, destination);
 }
 
-async function verifiedNodeArchive(architecture, checksums) {
+async function verifiedNodeArchive(architecture) {
   const archiveName = `node-v${nodeVersion}-darwin-${architecture}.tar.gz`;
-  const match = checksums.match(new RegExp(`^([a-f0-9]{64})  ${archiveName}$`, "m"));
-  if (!match) throw new Error(`Official checksum is missing for ${archiveName}`);
+  const expectedChecksum = nodeArchiveSha256[architecture];
 
   const archivePath = path.join(runtimeCacheDirectory, archiveName);
-  if (!(await exists(archivePath)) || (await sha256(archivePath)) !== match[1]) {
+  if (!(await exists(archivePath)) || (await sha256(archivePath)) !== expectedChecksum) {
     await rm(archivePath, { force: true });
     await download(`https://nodejs.org/dist/v${nodeVersion}/${archiveName}`, archivePath);
   }
-  if ((await sha256(archivePath)) !== match[1]) {
+  if ((await sha256(archivePath)) !== expectedChecksum) {
     throw new Error(`Checksum verification failed for ${archiveName}`);
   }
   return { archiveName, archivePath };
 }
 
-async function extractNodeRuntime(architecture, checksums) {
-  const { archivePath } = await verifiedNodeArchive(architecture, checksums);
+async function extractNodeRuntime(architecture) {
+  const { archivePath } = await verifiedNodeArchive(architecture);
   const destination = path.join(extractionDirectory, architecture);
   await rm(destination, { recursive: true, force: true });
   await mkdir(destination, { recursive: true });
@@ -109,12 +112,9 @@ async function extractNodeRuntime(architecture, checksums) {
 }
 
 async function prepareNodeRuntime() {
-  const checksumPath = path.join(runtimeCacheDirectory, `SHASUMS256-v${nodeVersion}.txt`);
-  await download(`https://nodejs.org/dist/v${nodeVersion}/SHASUMS256.txt`, checksumPath);
-  const checksums = await readFile(checksumPath, "utf8");
   const runtimes = new Map();
   for (const architecture of nodeArchitectures) {
-    runtimes.set(architecture, await extractNodeRuntime(architecture, checksums));
+    runtimes.set(architecture, await extractNodeRuntime(architecture));
   }
 
   const universalNodePath = path.join(binariesDirectory, "node-universal-apple-darwin");

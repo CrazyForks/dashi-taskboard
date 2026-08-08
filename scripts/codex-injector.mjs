@@ -1248,7 +1248,9 @@ async function main() {
       if (!options.watch) throw error;
       console.error(`Waiting for Codex renderer: ${error.message}`);
     }
-    console.log(JSON.stringify({ injected: firstResults }, null, 2));
+    if (firstResults.length > 0) {
+      console.log(JSON.stringify({ injected: firstResults }, null, 2));
+    }
     let openPending = options.open && firstResults.length === 0;
 
     if (!options.watch) {
@@ -1256,21 +1258,47 @@ async function main() {
       return;
     }
 
+    let stopping = false;
     const stop = async () => {
+      if (stopping) return;
+      stopping = true;
       injectedTargets.forEach((connection) => connection.close());
+      if (
+        codexProcess
+        && codexProcess.exitCode === null
+        && codexProcess.signalCode === null
+      ) {
+        const codexExitPromise = new Promise((resolve) => {
+          codexProcess.once("exit", () => resolve(true));
+        });
+        codexProcess.kill("SIGTERM");
+        const codexExited = await Promise.race([
+          codexExitPromise,
+          new Promise((resolve) => setTimeout(() => resolve(false), 5_000)),
+        ]);
+        if (!codexExited && codexProcess.exitCode === null) {
+          codexProcess.kill("SIGKILL");
+          await Promise.race([
+            codexExitPromise,
+            new Promise((resolve) => setTimeout(resolve, 1_000)),
+          ]);
+        }
+      }
       await supervisor.stop();
       process.exit(0);
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
 
-    while (true) {
+    while (!stopping) {
       await new Promise((resolve) => setTimeout(resolve, 2_000));
+      if (stopping) break;
       try {
         await supervisor.ensure();
       } catch (error) {
         console.error(`Waiting for Taskboard service: ${error.message}`);
       }
+      if (stopping) break;
       for (const connection of injectedTargets.values()) {
         try {
           await publishHostHeartbeat(connection, options.startupToken);
@@ -1294,13 +1322,21 @@ async function main() {
           console.log(JSON.stringify({ injected: results }, null, 2));
         }
       } catch (error) {
+        if (stopping) break;
         const launchedCodexExited = codexProcess
           && (codexProcess.exitCode !== null || codexProcess.signalCode !== null);
         if (launchedCodexExited) {
-          console.error("Codex exited; restarting it for the taskboard launcher.");
           injectedTargets.forEach((connection) => connection.close());
           injectedTargets.clear();
+          const exitCode = codexProcess.exitCode;
           codexProcess = null;
+          if (exitCode === 0) {
+            console.error(
+              "Waiting for Codex after normal exit; open Codex Taskboard again to restart it.",
+            );
+            continue;
+          }
+          console.error("Codex exited unexpectedly; restarting it for the taskboard launcher.");
           try {
             codexProcess = launchCodex(options.appPath, options.port);
             await waitUntilReachable(cdpVersionUrl, 30_000);
@@ -1313,7 +1349,7 @@ async function main() {
         console.error(`Waiting for Codex renderer: ${error.message}`);
       }
     }
-    await supervisor.stop();
+    if (!stopping) await supervisor.stop();
   } catch (error) {
     await supervisor.stop();
     throw error;

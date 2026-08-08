@@ -15,11 +15,13 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{ActivationPolicy, AppHandle, Emitter, Manager};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 const LAUNCHER_PORT: &str = "9231";
+const CODEX_PROFILE_ARGUMENT: &str =
+    "--user-data-dir=/private/tmp/codex-taskboard-independent-profile-v2";
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Serialize)]
@@ -96,6 +98,15 @@ fn append_log(state: &LauncherState, line: &str) {
     }
 }
 
+fn show_error_dialog(app: &AppHandle, title: &str, message: &str) {
+    app.dialog()
+        .message(message)
+        .title(title)
+        .kind(MessageDialogKind::Error)
+        .buttons(MessageDialogButtons::OkCustom("关闭".into()))
+        .blocking_show();
+}
+
 fn find_codex_app(home_directory: &Path) -> Option<PathBuf> {
     [
         PathBuf::from("/Applications/ChatGPT.app"),
@@ -139,7 +150,8 @@ fn process_matches_record(record: &LauncherPidRecord) -> bool {
         return false;
     };
     let command = String::from_utf8_lossy(&output.stdout);
-    command.contains(&*record.node_path.to_string_lossy())
+    let command = command.trim_start();
+    command.starts_with(&*record.node_path.to_string_lossy())
         && command.contains(&*record.injector_path.to_string_lossy())
 }
 
@@ -155,18 +167,29 @@ fn stop_stale_processes(state: &LauncherState) {
         let Some((pid, command)) = line.trim().split_once(char::is_whitespace) else {
             continue;
         };
+        let command = command.trim_start();
         let Ok(pid) = pid.parse::<u32>() else {
             continue;
         };
-        let is_launcher = command
-            .contains("/Codex Taskboard.app/Contents/Resources/app/scripts/codex-injector.mjs")
+        let is_taskboard_node = command.starts_with('/')
+            && command.contains("/Codex Taskboard.app/Contents/MacOS/node ");
+        let is_launcher = is_taskboard_node
+            && command
+                .contains("/Codex Taskboard.app/Contents/Resources/app/scripts/codex-injector.mjs")
             && command.contains(" --launch ")
             && command.contains(" --watch ")
             && command.contains(" --open ")
             && command.contains(" --port 9231");
-        let is_service =
-            command.contains("/Codex Taskboard.app/Contents/Resources/app/server/index.mjs");
-        if is_launcher || is_service {
+        let is_service = is_taskboard_node
+            && command.contains("/Codex Taskboard.app/Contents/Resources/app/server/index.mjs");
+        let executable = command.split_whitespace().next().unwrap_or_default();
+        let is_codex_main = executable.ends_with("/ChatGPT.app/Contents/MacOS/ChatGPT")
+            || executable.ends_with("/Codex.app/Contents/MacOS/Codex");
+        let is_launcher_codex = is_codex_main
+            && command.contains(CODEX_PROFILE_ARGUMENT)
+            && command.contains("--remote-debugging-port=9231")
+            && !command.contains(" --type=");
+        if is_launcher || is_service || is_launcher_codex {
             append_log(state, &format!("Stopping stale taskboard process {pid}"));
             send_sigterm(pid);
             if !wait_for_process_exit(pid, STOP_TIMEOUT) {
@@ -334,6 +357,7 @@ fn start_launcher(app: &AppHandle, state: &Arc<LauncherState>) -> Result<Launche
                     append_log(&event_state, &line);
                     if line.contains("Waiting for Codex") {
                         update_snapshot(&event_app, &event_state, |snapshot| {
+                            snapshot.phase = "starting".into();
                             snapshot.message = "正在等待 Codex 窗口…".into();
                         });
                     }
@@ -362,9 +386,36 @@ fn start_launcher(app: &AppHandle, state: &Arc<LauncherState>) -> Result<Launche
                             snapshot.child_pid = None;
                             if !intentional {
                                 snapshot.phase = "error".into();
-                                snapshot.message = "任务面板进程已退出，可重新启动。".into();
+                                snapshot.message = "任务面板进程已退出，正在恢复…".into();
                             }
                         });
+                        if !intentional {
+                            let restart_app = event_app.clone();
+                            let restart_state = event_state.clone();
+                            tauri::async_runtime::spawn_blocking(move || {
+                                thread::sleep(Duration::from_secs(2));
+                                if restart_state.intentional_stop.load(Ordering::SeqCst) {
+                                    return;
+                                }
+                                if let Err(error) = start_launcher(&restart_app, &restart_state) {
+                                    append_log(
+                                        &restart_state,
+                                        &format!("Launcher recovery failed: {error}"),
+                                    );
+                                    update_snapshot(&restart_app, &restart_state, |snapshot| {
+                                        snapshot.phase = "error".into();
+                                        snapshot.message = error.clone();
+                                    });
+                                    show_error_dialog(
+                                        &restart_app,
+                                        "Codex Taskboard 恢复失败",
+                                        &format!(
+                                            "任务面板进程无法恢复：{error}\n\n请重新打开 App。"
+                                        ),
+                                    );
+                                }
+                            });
+                        }
                     }
                 }
                 _ => {}
@@ -451,7 +502,7 @@ async fn install_update(
     {
         Ok(bytes) => bytes,
         Err(error) => {
-            append_log(&state, &format!("Update download failed: {error}"));
+            append_log(state, &format!("Update download failed: {error}"));
             update_snapshot(app, state, |snapshot| {
                 snapshot.update_message = format!("更新下载或签名验证失败：{error}");
                 snapshot.update_available = true;
@@ -465,16 +516,16 @@ async fn install_update(
     });
     stop_managed_child(app, state);
     if let Err(error) = update.install(&bytes) {
-        append_log(&state, &format!("Update installation failed: {error}"));
+        append_log(state, &format!("Update installation failed: {error}"));
         let restart_error = start_launcher(app, state).err();
         if let Some(restart_error) = &restart_error {
             append_log(
-                &state,
+                state,
                 &format!("Taskboard restart after update failure failed: {restart_error}"),
             );
         } else {
             append_log(
-                &state,
+                state,
                 "Taskboard restarted after update installation failure",
             );
         }
@@ -490,7 +541,7 @@ async fn install_update(
     }
 
     append_log(
-        &state,
+        state,
         &format!("Installed update {update_version}; restarting"),
     );
     update_snapshot(app, state, |snapshot| {
@@ -534,6 +585,17 @@ async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
             state,
             &format!("Startup update installation failed: {error}"),
         );
+        let service_recovered = state.snapshot.lock().unwrap().child_pid.is_some();
+        let service_message = if service_recovered {
+            "任务面板服务已恢复。"
+        } else {
+            "任务面板服务未能恢复，请重新打开 App。"
+        };
+        show_error_dialog(
+            app,
+            "Codex Taskboard 更新失败",
+            &format!("更新未完成。{service_message}\n\n请稍后重试。详情见启动日志。\n\n{error}"),
+        );
     }
 }
 
@@ -559,8 +621,15 @@ fn main() {
                     append_log(&state, &format!("Launcher startup failed: {error}"));
                     update_snapshot(&app_handle, &state, |snapshot| {
                         snapshot.phase = "error".into();
-                        snapshot.message = error;
+                        snapshot.message = error.clone();
                     });
+                    show_error_dialog(
+                        &app_handle,
+                        "Codex Taskboard 启动失败",
+                        &format!(
+                            "{error}\n\n请确认官方 Codex/ChatGPT App 已安装。详情见启动日志。"
+                        ),
+                    );
                 }
                 offer_startup_update(&app_handle, &state).await;
             });
@@ -569,13 +638,24 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build Codex Taskboard");
 
-    app.run(|app_handle, event| {
-        if matches!(
-            event,
-            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-        ) {
+    app.run(|app_handle, event| match event {
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => {
+            let state = app_handle.state::<Arc<LauncherState>>();
+            stop_managed_child(app_handle, &state);
+            if let Err(error) = start_launcher(app_handle, &state) {
+                append_log(&state, &format!("Launcher reopen failed: {error}"));
+                show_error_dialog(
+                    app_handle,
+                    "Codex Taskboard 启动失败",
+                    &format!("{error}\n\n请确认官方 Codex/ChatGPT App 已安装。"),
+                );
+            }
+        }
+        tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
             let state = app_handle.state::<Arc<LauncherState>>();
             stop_managed_child(app_handle, &state);
         }
+        _ => {}
     });
 }

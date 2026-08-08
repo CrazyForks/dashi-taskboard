@@ -9,8 +9,10 @@ Codex Taskboard 是一个本地优先的任务面板。它可在浏览器中运�
 1. 用户打开 `Codex Taskboard.app`。
 2. App 从自身资源启动 Node.js 和本地任务面板服务。服务只监听 `127.0.0.1:47823`。
 3. App 启动官方 Codex/ChatGPT 客户端的独立窗口，并通过 CDP 注入任务面板入口。
-4. 用户在 Codex 侧栏打开任务面板。启动器不显示主窗口或 Dock 图标；启动、等待和检查更新的结果只写入日志，只有发现更新时才显示原生确认弹窗。
+4. 用户在 Codex 侧栏打开任务面板。启动器不显示主窗口或 Dock 图标；正常启动、等待和无更新结果只写入日志。只有发现更新、启动失败，或用户确认更新后发生失败时才显示原生弹窗。
 5. 用户修改任务、评论或附件。服务把数据写入 `~/Library/Application Support/Codex Taskboard`，并把变化推送到所有已打开的面板。
+
+用户用 `Cmd-Q` 正常退出 Codex/ChatGPT 后，启动器不会强制重开它。再次打开 `Codex Taskboard.app` 会重新启动官方客户端并注入面板。官方客户端异常退出时，启动器会自动恢复。
 
 App 不修改官方客户端的 `app.asar`。App 自带 Node.js、服务、Web 界面、注入器、Skill 和 `taskctl`，所以安装机不需要系统 Node.js 或本仓库。
 
@@ -52,7 +54,7 @@ App 不修改官方客户端的 `app.asar`。App 自带 Node.js、服务、Web �
 
 ### 自动更新
 
-App 每次启动时只检查一次 GitHub Releases。没有更新时保持静默；发现新版本时显示原生确认弹窗。用户选择“立即更新”后，App 会下载更新包并验证 Updater 签名；验证通过后才停止任务面板服务、替换 App 并自动重启。用户选择“稍后”后，本次运行不再检查。发布版从以下地址读取 Tauri 的静态更新清单：
+App 每次启动时只检查一次 GitHub Releases。没有更新时保持静默；发现新版本时显示原生确认弹窗。用户选择“立即更新”后，App 会下载更新包并验证 Updater 签名；验证通过后才停止任务面板服务、替换 App 并自动重启。更新失败时显示中文错误弹窗，并说明任务面板服务是否已恢复。用户选择“稍后”后，本次运行不再检查。发布版从以下地址读取 Tauri 的静态更新清单：
 
 ```text
 https://github.com/chuspeeism/dashi-taskboard/releases/latest/download/latest.json
@@ -106,7 +108,9 @@ npm start
 
 ## 发布 macOS App
 
-`.github/workflows/release-macos.yml` 只接受 `app-v*` 标签推送或手动触发。它使用 Node.js 22、Rust 1.88 和两个 macOS Rust target 构建 universal 包，然后创建 GitHub Draft Release。它不会自动发布 Draft。
+`.github/workflows/check.yml` 在 PR 中使用 macOS runner 准备内置 Node，并编译两个 macOS Rust target。`.github/workflows/release-macos.yml` 只接受 `app-v*` 标签推送或手动触发。它使用 Node.js 22、Rust 1.88 和两个 macOS Rust target 构建 universal 包，然后创建 GitHub Draft Release。所有第三方 Action 都锁定到完整提交 SHA；工作流不会自动发布 Draft。
+
+内置 Node 版本固定为 `22.23.2`。arm64 与 x64 安装包的 SHA-256 已写入 `scripts/prepare-tauri-app.mjs`，构建不会信任与安装包同源、临时下载的校验清单。
 
 ### GitHub Secrets
 
