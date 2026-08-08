@@ -285,7 +285,7 @@ async function buildApp(version) {
   return appPath;
 }
 
-async function prepareScenario(name, baselineApp) {
+async function prepareScenario(name, baselineApp, environment = {}) {
   const scenarioRoot = path.join(temporaryRoot, "scenarios", name);
   const homeDirectory = path.join(scenarioRoot, "home");
   const installDirectory = path.join(scenarioRoot, "install");
@@ -301,7 +301,7 @@ async function prepareScenario(name, baselineApp) {
   const outputPath = path.join(scenarioRoot, "app-output.log");
   const outputFd = openSync(outputPath, "a");
   const app = spawn(executablePath, [], {
-    env: { ...process.env, HOME: homeDirectory },
+    env: { ...process.env, HOME: homeDirectory, ...environment },
     stdio: ["ignore", outputFd, outputFd],
   });
   closeSync(outputFd);
@@ -348,11 +348,52 @@ async function runBadSignature(baselineApp) {
 
 async function runInstallFailure(baselineApp) {
   selectScenario("install-failure");
-  const scenario = await prepareScenario("install-failure", baselineApp);
+  const gatePath = path.join(
+    temporaryRoot,
+    "scenarios",
+    "install-failure",
+    "install.paused",
+  );
+  const resumePath = path.join(
+    temporaryRoot,
+    "scenarios",
+    "install-failure",
+    "install.resume",
+  );
+  const scenario = await prepareScenario("install-failure", baselineApp, {
+    CODEX_TASKBOARD_UPDATER_INSTALL_GATE: gatePath,
+  });
   try {
     const oldPid = scenario.initial.runtime.pid;
     const oldPort = new URL(scenario.initial.runtime.url).port;
     releaseScenario();
+    await waitFor(async () => {
+      try {
+        return (await readFile(gatePath, "utf8")) === "paused";
+      } catch {
+        return false;
+      }
+    }, "paused updater installation");
+    await waitFor(() => processGroup(oldPid).length === 0, "stopped launcher process group");
+
+    run("/usr/bin/open", [scenario.installedApp]);
+    await logContains(scenario.logPath, "Launcher reopen ignored during update installation");
+    await assert.rejects(readFile(scenario.childRecordPath, "utf8"), { code: "ENOENT" });
+    const nodePath = path.join(scenario.installedApp, "Contents", "MacOS", "node");
+    const injectorPath = path.join(
+      scenario.installedApp,
+      "Contents",
+      "Resources",
+      "app",
+      "scripts",
+      "codex-injector.mjs",
+    );
+    const installChildren = processTable().filter((entry) => (
+      entry.command.startsWith(`${nodePath} `) && entry.command.includes(injectorPath)
+    ));
+    assert.deepEqual(installChildren, []);
+
+    await writeFile(resumePath, "resume\n");
     await logContains(scenario.logPath, "Taskboard restarted after update installation failure");
     const recovered = await runtimeWithVersion(
       scenario.runtimePath,
@@ -371,6 +412,8 @@ async function runInstallFailure(baselineApp) {
       recoveredChildPid: recovered.runtime.pid,
       listenerPort: Number(oldPort),
       oldProcessGroupRemoved: true,
+      reopenSuppressedDuringInstall: true,
+      childProcessCountDuringInstall: installChildren.length,
     };
   } finally {
     await stopScenario(scenario.executablePath, scenario.childRecordPath);
