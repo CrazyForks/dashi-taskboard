@@ -1691,6 +1691,7 @@ async function main() {
       console.log(JSON.stringify({ injected: firstResults }, null, 2));
     }
     let openPending = options.open && firstResults.length === 0;
+    let idleAfterNormalExit = false;
 
     if (!options.watch) {
       codexProcess?.unref();
@@ -1715,6 +1716,7 @@ async function main() {
           await connection.hostBridge?.publishHeartbeat();
         } catch (_) {}
       }
+      if (idleAfterNormalExit) continue;
       try {
         if (options.cdpPipe && !cdpRuntime) {
           throw new Error("Codex CDP pipe is waiting to restart");
@@ -1741,8 +1743,17 @@ async function main() {
         if (stopping) break;
         const privatePipeUnavailable = options.cdpPipe
           && (!cdpRuntime || !cdpRuntime.isHealthy());
-        const launchedCodexExited = codexProcess
-          && (codexProcess.exitCode !== null || codexProcess.signalCode !== null);
+        const launchedCodex = codexProcess;
+        let launchedCodexExited = launchedCodex
+          && (launchedCodex.exitCode !== null || launchedCodex.signalCode !== null);
+        if (privatePipeUnavailable && launchedCodex && !launchedCodexExited) {
+          await Promise.race([
+            new Promise((resolve) => launchedCodex.once("exit", resolve)),
+            new Promise((resolve) => setTimeout(resolve, 250)),
+          ]);
+          launchedCodexExited = launchedCodex.exitCode !== null
+            || launchedCodex.signalCode !== null;
+        }
         if (privatePipeUnavailable || launchedCodexExited) {
           injectedTargets.forEach((connection) => {
             unregisterQuotaPolicyCdp(connection);
@@ -1751,16 +1762,17 @@ async function main() {
           injectedTargets.clear();
           cdpRuntime?.close();
           if (options.cdpPipe) cdpRuntime = null;
-          const launchedCodex = codexProcess;
           const exitCode = launchedCodex?.exitCode;
           codexProcess = null;
-          if (privatePipeUnavailable) {
-            await terminateCodex(launchedCodex);
-          } else if (exitCode === 0) {
+          if (exitCode === 0) {
+            idleAfterNormalExit = true;
             console.error(
               "Waiting for Codex after normal exit; open Codex Taskboard again to restart it.",
             );
             continue;
+          }
+          if (privatePipeUnavailable && !launchedCodexExited) {
+            await terminateCodex(launchedCodex);
           }
           console.error(
             privatePipeUnavailable
