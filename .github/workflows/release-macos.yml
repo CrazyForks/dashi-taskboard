@@ -33,8 +33,16 @@ jobs:
 
       - name: Validate immutable release tag and versions
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
+          TAG_CREATED: ${{ github.event.created }}
+          TAG_DELETED: ${{ github.event.deleted }}
+          TAG_FORCED: ${{ github.event.forced }}
         run: |
+          if [[ "$TAG_CREATED" != "true" || "$TAG_DELETED" == "true" || "$TAG_FORCED" == "true" ]]; then
+            echo "发布标签必须是首次创建，不能删除或强制更新。" >&2
+            exit 1
+          fi
           git fetch --no-tags origin main
           TAG_COMMIT="$(git rev-parse "$RELEASE_TAG^{}")"
           if [[ "$TAG_COMMIT" != "$GITHUB_SHA" ]]; then
@@ -54,7 +62,12 @@ jobs:
             echo "发布标签必须与应用版本一致。" >&2
             exit 1
           fi
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "该标签或版本已存在 Release。" >&2
+            exit 1
+          fi
           echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+          echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> "$GITHUB_ENV"
 
       - name: Set up Rust 1.88
         uses: dtolnay/rust-toolchain@2eae45db285e407f22119950686d47e1101e071b # 1.88.0
@@ -103,31 +116,100 @@ jobs:
           printf '%s' "$APPLE_API_PRIVATE_KEY" > "$APPLE_API_KEY_PATH"
           echo "APPLE_API_KEY_PATH=$APPLE_API_KEY_PATH" >> "$GITHUB_ENV"
 
-      - name: Build, sign, notarize, and create draft release
-        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+      - name: Build unsigned universal App and DMG layout
+        run: >-
+          CI=true npm run tauri -- build
+          --target universal-apple-darwin
+          --bundles app,dmg
+          --no-sign
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Sign App with separate Node.js policy
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: node scripts/sign-macos-app.mjs "src-tauri/target/universal-apple-darwin/release/bundle/macos/Codex Taskboard.app"
+
+      - name: Notarize and staple App
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          APP_PATH="src-tauri/target/universal-apple-darwin/release/bundle/macos/Codex Taskboard.app"
+          APP_ZIP="$RUNNER_TEMP/Codex.Taskboard.app.zip"
+          /usr/bin/ditto -c -k --keepParent --sequesterRsrc "$APP_PATH" "$APP_ZIP"
+          xcrun notarytool submit "$APP_ZIP" \
+            --key-id "$APPLE_API_KEY" \
+            --key "$APPLE_API_KEY_PATH" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple -v "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          spctl -a -t exec -vv "$APP_PATH"
+
+      - name: Create, sign, notarize, and staple DMG
+        env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+        run: |
+          BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
+          APP_NAME="Codex Taskboard.app"
+          RAW_DMG_NAME="Codex Taskboard_${PACKAGE_VERSION}_universal.dmg"
+          RELEASE_DMG_NAME="Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg"
+          rm -f "$BUNDLE_ROOT/dmg/$RAW_DMG_NAME" "$BUNDLE_ROOT/macos/$RAW_DMG_NAME"
+          (
+            cd "$BUNDLE_ROOT/macos"
+            ../dmg/bundle_dmg.sh \
+              --volname "Codex Taskboard" \
+              --icon "$APP_NAME" 180 170 \
+              --app-drop-link 480 170 \
+              --window-size 660 400 \
+              --hide-extension "$APP_NAME" \
+              --volicon ../dmg/icon.icns \
+              --skip-jenkins \
+              "$RAW_DMG_NAME" "$APP_NAME"
+          )
+          mv "$BUNDLE_ROOT/macos/$RAW_DMG_NAME" "$BUNDLE_ROOT/dmg/$RELEASE_DMG_NAME"
+          DMG_PATH="$BUNDLE_ROOT/dmg/$RELEASE_DMG_NAME"
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$DMG_PATH"
+          xcrun notarytool submit "$DMG_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --key "$APPLE_API_KEY_PATH" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple -v "$DMG_PATH"
+          xcrun stapler validate "$DMG_PATH"
+          codesign --verify --strict --verbose=2 "$DMG_PATH"
+          spctl -a -t open --context context:primary-signature -vv "$DMG_PATH"
+
+      - name: Create signed updater files
+        env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: ${{ env.RELEASE_TAG }}
-          releaseName: "Codex Taskboard ${{ env.RELEASE_TAG }}"
-          releaseBody: |
-            macOS universal 安装包。此 Release 是待人工验证的 Draft，验证完成后再手动发布。
-          releaseCommitish: ${{ github.sha }}
-          releaseDraft: true
-          prerelease: false
-          generateReleaseNotes: true
-          uploadUpdaterJson: true
-          uploadUpdaterSignatures: true
-          args: --target universal-apple-darwin --bundles app,dmg
+        run: |
+          BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
+          node scripts/create-macos-updater.mjs \
+            "$BUNDLE_ROOT/macos/Codex Taskboard.app" \
+            "$BUNDLE_ROOT/release" \
+            "$RELEASE_TAG"
+
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --target "$GITHUB_SHA" \
+            --draft \
+            --title "Codex Taskboard $RELEASE_TAG" \
+            --notes "macOS universal 安装包。此 Release 是待实机验证的 Draft，验证完成后再发布。" \
+            "$BUNDLE_ROOT/dmg/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg" \
+            "$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
+            "$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" \
+            "$BUNDLE_ROOT/release/latest.json"
 
       - name: Remove temporary signing files
         if: always()

@@ -21,6 +21,10 @@ import {
 } from "./codex-injector-runtime.mjs";
 import { readCodexQuotaStatus } from "./codex-rate-limits.mjs";
 import { createTaskboardSupervisor } from "./taskboard-supervisor.mjs";
+import {
+  CdpPipeBrowser,
+  validatedLoopbackCdpWebSocketUrl,
+} from "./codex-cdp-pipe.mjs";
 
 const injectorPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(injectorPath), "..");
@@ -74,6 +78,7 @@ function parseArgs(argv) {
   const options = {
     port: defaultCodexDebuggingPort,
     portExplicit: false,
+    cdpPipe: false,
     launch: false,
     watch: false,
     open: false,
@@ -89,6 +94,7 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--launch") options.launch = true;
+    else if (arg === "--cdp-pipe") options.cdpPipe = true;
     else if (arg === "--watch") options.watch = true;
     else if (arg === "--open") options.open = true;
     else if (arg === "--refresh") options.refresh = true;
@@ -112,6 +118,9 @@ function parseArgs(argv) {
 
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) {
     throw new Error("--port must be an integer between 1 and 65535");
+  }
+  if (options.cdpPipe && !options.launch) {
+    throw new Error("--cdp-pipe requires --launch");
   }
   return options;
 }
@@ -178,15 +187,18 @@ function startTaskboard({ detached }) {
   });
 }
 
-function launchCodex(appPath, port) {
-  const executablePath = path.join(
+function codexExecutablePath(appPath) {
+  return path.join(
     appPath,
     "Contents",
     "MacOS",
     path.basename(appPath, ".app"),
   );
+}
+
+function launchCodex(appPath, port) {
   return spawn(
-    executablePath,
+    codexExecutablePath(appPath),
     [
       `--user-data-dir=${independentCodexProfilePath}`,
       "--remote-debugging-address=127.0.0.1",
@@ -198,6 +210,28 @@ function launchCodex(appPath, port) {
       stdio: "ignore",
     },
   );
+}
+
+async function launchCodexWithPipe(appPath) {
+  const child = spawn(
+    codexExecutablePath(appPath),
+    [
+      `--user-data-dir=${independentCodexProfilePath}`,
+      "--remote-debugging-pipe",
+    ],
+    {
+      env: withoutTaskboardLauncherEnvironment(process.env),
+      stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"],
+    },
+  );
+  const browser = new CdpPipeBrowser(child);
+  try {
+    await browser.open();
+    return { child, browser };
+  } catch (error) {
+    child.kill("SIGTERM");
+    throw error;
+  }
 }
 
 class CdpConnection {
@@ -314,14 +348,46 @@ class CdpConnection {
 
 async function codexTargets(port) {
   const targets = await fetchJson(`http://127.0.0.1:${port}/json/list`);
-  return targets.filter(
-    (target) =>
+  return targets.filter(isCodexTarget).map((target) => {
+    return {
+      ...target,
+      webSocketDebuggerUrl: validatedLoopbackCdpWebSocketUrl(
+        target.webSocketDebuggerUrl,
+        port,
+      ),
+    };
+  });
+}
+
+function isCodexTarget(target) {
+  return (
       target.type === "page" &&
-      target.webSocketDebuggerUrl &&
       !target.url?.includes("initialRoute=%2Fglobal-dictation") &&
       !target.url?.includes("initialRoute=%2Favatar-overlay") &&
-      (target.url?.startsWith("app://") || target.title === "Codex"),
+      (target.url?.startsWith("app://") || target.title === "Codex")
   );
+}
+
+function tcpCdpRuntime(port) {
+  return {
+    targets: () => codexTargets(port),
+    connect: async (target) => {
+      const connection = new CdpConnection(target.webSocketDebuggerUrl);
+      await connection.open();
+      return connection;
+    },
+    close: () => {},
+  };
+}
+
+function pipeCdpRuntime(browser) {
+  return {
+    targets: async () => (await browser.targets())
+      .filter(isCodexTarget)
+      .map((target) => ({ ...target, id: target.targetId })),
+    connect: (target) => browser.connect(target.id),
+    close: () => browser.close(),
+  };
 }
 
 function codexDebuggingPorts(preferredPort) {
@@ -1102,6 +1168,7 @@ async function registerInjectionSource(cdp, source) {
 }
 
 async function injectTarget(
+  runtime,
   target,
   source,
   sourceHash,
@@ -1112,13 +1179,12 @@ async function injectTarget(
   attachExisting,
   startupToken,
 ) {
-  const cdp = new CdpConnection(target.webSocketDebuggerUrl);
+  const cdp = await runtime.connect(target);
   let retained = false;
   const hostBridge = keepAlive
     ? installTaskboardHostBinding(cdp, supervisor, startupToken)
     : null;
   cdp.hostBridge = hostBridge;
-  await cdp.open();
   try {
     await cdp.send("Page.enable");
     await cdp.send("Page.setBypassCSP", { enabled: true });
@@ -1211,7 +1277,7 @@ async function injectTarget(
 }
 
 async function injectAll(
-  port,
+  runtime,
   source,
   sourceHash,
   shouldOpen,
@@ -1222,7 +1288,7 @@ async function injectAll(
   attachExisting,
   startupToken,
 ) {
-  const targets = await codexTargets(port);
+  const targets = await runtime.targets();
   if (targets.length === 0) {
     if (keepAlive) return [];
     throw new Error("No Codex renderer target found");
@@ -1241,6 +1307,7 @@ async function injectAll(
     if (injectedTargets.has(target.id)) continue;
     const firstTarget = injectedTargets.size === 0 && results.length === 0;
     const { result, connection } = await injectTarget(
+      runtime,
       target,
       source,
       sourceHash,
@@ -1318,6 +1385,7 @@ async function main() {
   }
 
   let codexProcess = null;
+  let cdpRuntime = null;
   const detached = !options.watch;
   const supervisor = createTaskboardSupervisor({
     detached,
@@ -1333,22 +1401,30 @@ async function main() {
   });
 
   try {
-    let cdpReachable = await isReachable(cdpVersionUrl);
-    if (!cdpReachable && options.watch && !options.launch) {
-      await waitUntilReachable(cdpVersionUrl, 60_000);
-      cdpReachable = true;
-    }
-    if (!cdpReachable) {
-      if (!options.launch) {
+    let cdpReachable = false;
+    if (!options.cdpPipe) {
+      cdpReachable = await isReachable(cdpVersionUrl);
+      if (!cdpReachable && options.watch && !options.launch) {
+        await waitUntilReachable(cdpVersionUrl, 60_000);
+        cdpReachable = true;
+      }
+      if (!cdpReachable && !options.launch) {
         throw new Error(`Codex CDP is not listening on 127.0.0.1:${options.port}`);
       }
     }
 
     await supervisor.ensure({ force: true });
 
-    if (!cdpReachable) {
+    if (options.cdpPipe) {
+      const launched = await launchCodexWithPipe(options.appPath);
+      codexProcess = launched.child;
+      cdpRuntime = pipeCdpRuntime(launched.browser);
+    } else if (!cdpReachable) {
       codexProcess = launchCodex(options.appPath, options.port);
       await waitUntilReachable(cdpVersionUrl, 30_000);
+      cdpRuntime = tcpCdpRuntime(options.port);
+    } else {
+      cdpRuntime = tcpCdpRuntime(options.port);
     }
 
     const { source, sourceHash } = await currentInjectionSource();
@@ -1356,7 +1432,7 @@ async function main() {
     let firstResults = [];
     try {
       firstResults = await injectAll(
-        options.port,
+        cdpRuntime,
         source,
         sourceHash,
         options.open,
@@ -1386,6 +1462,7 @@ async function main() {
       if (stopping) return;
       stopping = true;
       injectedTargets.forEach((connection) => connection.close());
+      cdpRuntime?.close();
       if (
         codexProcess
         && codexProcess.exitCode === null
@@ -1429,7 +1506,7 @@ async function main() {
       }
       try {
         const results = await injectAll(
-          options.port,
+          cdpRuntime,
           source,
           sourceHash,
           openPending,
@@ -1451,6 +1528,7 @@ async function main() {
         if (launchedCodexExited) {
           injectedTargets.forEach((connection) => connection.close());
           injectedTargets.clear();
+          cdpRuntime?.close();
           const exitCode = codexProcess.exitCode;
           codexProcess = null;
           if (exitCode === 0) {
@@ -1461,8 +1539,15 @@ async function main() {
           }
           console.error("Codex exited unexpectedly; restarting it for the taskboard launcher.");
           try {
-            codexProcess = launchCodex(options.appPath, options.port);
-            await waitUntilReachable(cdpVersionUrl, 30_000);
+            if (options.cdpPipe) {
+              const launched = await launchCodexWithPipe(options.appPath);
+              codexProcess = launched.child;
+              cdpRuntime = pipeCdpRuntime(launched.browser);
+            } else {
+              codexProcess = launchCodex(options.appPath, options.port);
+              await waitUntilReachable(cdpVersionUrl, 30_000);
+              cdpRuntime = tcpCdpRuntime(options.port);
+            }
             openPending = options.open;
           } catch (restartError) {
             console.error(`Waiting to restart Codex: ${restartError.message}`);

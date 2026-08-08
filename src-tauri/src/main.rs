@@ -102,15 +102,13 @@ fn acquire_instance_lock(path: &Path) -> Result<Option<File>, std::io::Error> {
     }
 }
 
-fn reserve_loopback_ports() -> Result<(u16, u16), String> {
+fn reserve_loopback_port() -> Result<u16, String> {
     let taskboard = TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
-    let cdp = TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
     let taskboard_port = taskboard
         .local_addr()
         .map_err(|error| error.to_string())?
         .port();
-    let cdp_port = cdp.local_addr().map_err(|error| error.to_string())?.port();
-    Ok((taskboard_port, cdp_port))
+    Ok(taskboard_port)
 }
 
 fn update_snapshot(
@@ -320,15 +318,14 @@ fn start_launcher_locked(
         "{}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         resource_directory.join("bin").display()
     );
-    let (taskboard_port, cdp_port) = reserve_loopback_ports()?;
+    let taskboard_port = reserve_loopback_port()?;
     let instance_token = Uuid::new_v4().to_string();
     let instance_secret = Uuid::new_v4().to_string();
     let version = state.snapshot.lock().unwrap().version.clone();
     let codex_profile = state.data_directory.join("codex-profile");
     let mut child = StdCommand::new(&node_path)
         .arg(&injector_path)
-        .args(["--launch", "--watch", "--open", "--port"])
-        .arg(cdp_port.to_string())
+        .args(["--launch", "--watch", "--open", "--cdp-pipe"])
         .args(["--startup-token", &instance_token, "--app-path"])
         .arg(&codex_app)
         .env("CODEX_TASKBOARD_DATA_DIR", &state.data_directory)
@@ -363,7 +360,9 @@ fn start_launcher_locked(
     });
     append_log(
         state,
-        &format!("Started launcher child {pid} on Taskboard {taskboard_port} and CDP {cdp_port}"),
+        &format!(
+            "Started launcher child {pid} on Taskboard {taskboard_port} with private CDP pipe"
+        ),
     );
     if let Some(stdout) = stdout {
         watch_launcher_output(stdout, false, app.clone(), state.clone());
