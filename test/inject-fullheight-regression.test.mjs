@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -10,6 +11,8 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
+const instanceToken = "7a6f8d37-78ce-46c9-87a8-08e10db88da2";
+const instanceSecret = "2e587946-96d6-47b5-930a-1ba70214fa88";
 const sourceRef = process.env.TASKBOARD_INJECTION_SOURCE_REF;
 const source = sourceRef
   ? (await execFileAsync(
@@ -87,9 +90,13 @@ function fixtureHtml(origin) {
     <output id="result"></output>
     <script>
       window.__CODEX_TASKBOARD_URL__ = ${JSON.stringify(`${origin}/taskboard?host=codex`)};
+      window.__CODEX_TASKBOARD_INSTANCE_TOKEN__ = ${JSON.stringify(instanceToken)};
+      window.__CODEX_TASKBOARD_INSTANCE_SECRET__ = ${JSON.stringify(instanceSecret)};
+      window.__CODEX_TASKBOARD_HOST_CAPABILITY__ = "fullheight-host-capability";
       window.__CODEX_TASKBOARD_SOURCE_HASH__ = "fullheight-regression";
       window.__browserPanelClosed = false;
       window.__injectionError = null;
+      window.__frameMessages = [];
       window.addEventListener("error", (event) => {
         window.__injectionError = event.error?.stack || event.message;
       });
@@ -97,6 +104,25 @@ function fixtureHtml(origin) {
         window.__injectionError = event.reason?.stack || String(event.reason);
       });
       window.addEventListener("message", (event) => {
+        if (typeof event.data?.type === "string" && event.data.type.startsWith("taskboard:")) {
+          window.__frameMessages.push({ type: event.data.type, origin: event.origin });
+        }
+        if (
+          event.source === window
+          && event.data?.type === "__codexTaskboardHostRequestV1"
+          && event.data.capability === "fullheight-host-capability"
+        ) {
+          const request = event.data.payload;
+          if (request.action === "load-frame") {
+            const frame = document.querySelector('iframe[name="' + request.frameName + '"]');
+            frame.srcdoc = '<script>parent.postMessage({ type: "taskboard:ready" }, "*")<\\/script>';
+          }
+          window.postMessage({
+            type: "__codexTaskboardHostResponseV1",
+            capability: "fullheight-host-capability",
+            response: { id: request.id, ok: true, loaded: true },
+          }, window.location.origin);
+        }
         if (event.data?.type !== "toggle-browser-panel" || event.data.open !== false) return;
         const panel = document.querySelector("[data-browser-sidebar-webview]");
         panel.style.visibility = "hidden";
@@ -110,6 +136,15 @@ function fixtureHtml(origin) {
     <script>eval(atob(${JSON.stringify(encodedSource)}));</script>
     <script>
       (async () => {
+        const publishHeartbeat = () => window.postMessage({
+            type: "__codexTaskboardHostHeartbeatV1",
+            capability: "fullheight-host-capability",
+            at: Date.now(),
+            startupToken: "fullheight-startup",
+          }, window.location.origin);
+        publishHeartbeat();
+        const heartbeatTimer = setInterval(publishHeartbeat, 500);
+        await new Promise((resolve) => setTimeout(resolve, 0));
         const entry = document.getElementById("codex-taskboard-entry");
         const panel = document.querySelector("[data-browser-sidebar-webview]");
         const panelVisibleBefore = getComputedStyle(panel).visibility !== "hidden";
@@ -134,9 +169,13 @@ function fixtureHtml(origin) {
           pageVisible: Boolean(page && !page.hidden && getComputedStyle(page).display !== "none"),
           frameMounted: frame?.parentElement === page,
           frameVisible: Boolean(frame && !frame.hidden && getComputedStyle(frame).display !== "none"),
+          frameIsolated: frame?.contentDocument === null,
+          statusHidden: document.getElementById("codex-taskboard-status")?.hidden === true,
+          frameMessages: window.__frameMessages,
           injectionError: window.__injectionError,
         };
         document.getElementById("result").textContent = btoa(JSON.stringify(result));
+        clearInterval(heartbeatTimer);
         window.__codexTaskboardInjection__?.destroy();
       })();
     </script>
@@ -154,6 +193,20 @@ test("Taskboard stays visible when closing the browser panel makes the conversat
   const server = http.createServer((request, response) => {
     response.setHeader("connection", "close");
     if (request.url?.startsWith("/taskboard")) {
+      response.setHeader("access-control-allow-origin", "null");
+      response.setHeader("access-control-expose-headers", "x-codex-taskboard-proof");
+      response.setHeader("access-control-allow-private-network", "true");
+      if (request.method === "OPTIONS") {
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      const challenge = new URL(request.url, "http://127.0.0.1")
+        .searchParams.get("__codex_taskboard_challenge");
+      response.setHeader(
+        "x-codex-taskboard-proof",
+        createHmac("sha256", instanceSecret).update(challenge).digest("hex"),
+      );
       response.setHeader("content-type", "text/html; charset=utf-8");
       response.end(`<!doctype html><html><head></head><body><script>parent.postMessage({ type: "taskboard:ready" }, "*")</script></body></html>`);
       return;
@@ -181,7 +234,7 @@ test("Taskboard stays visible when closing the browser panel makes the conversat
       "--virtual-time-budget=4000",
       "--dump-dom",
       url,
-    ], { maxBuffer: 5 * 1024 * 1024, timeout: 10_000 }));
+    ], { maxBuffer: 5 * 1024 * 1024, timeout: 20_000 }));
   } catch (error) {
     if (!String(error?.stdout ?? "").trim()) {
       t.skip("Chrome or Chromium cannot run headless dump-dom in this environment");
@@ -205,6 +258,11 @@ test("Taskboard stays visible when closing the browser panel makes the conversat
     pageVisible: true,
     frameMounted: true,
     frameVisible: true,
+    frameIsolated: true,
+    statusHidden: true,
+    frameMessages: [
+      { type: "taskboard:ready", origin: "null" },
+    ],
     injectionError: null,
   });
 });

@@ -44,5 +44,11 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - run: npm ci
       - run: npm run app:prepare -- --target universal-apple-darwin
-      - run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
-      - run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-apple-darwin
+      - name: Build the unsigned universal app bundle
+        run: >-
+          npm run tauri -- build
+          --target universal-apple-darwin
+          --bundles app
+          --no-sign
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - run: test -d "src-tauri/target/universal-apple-darwin/release/bundle/macos/Codex Taskboard.app"

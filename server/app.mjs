@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, open, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -155,7 +155,7 @@ function isTrustedNetworkHost(hostname) {
   return false;
 }
 
-function assertTrustedNetworkRequest(request) {
+function assertTrustedNetworkRequest(request, allowOpaqueOrigin = false) {
   let host;
   try {
     host = new URL(`http://${request.headers.host ?? ""}`).hostname;
@@ -169,6 +169,7 @@ function assertTrustedNetworkRequest(request) {
   const origin = request.headers.origin;
   if (!origin) return;
   if (TRUSTED_EMBED_ORIGINS.has(origin)) return;
+  if (allowOpaqueOrigin && origin === "null") return;
   let originHost;
   try {
     originHost = new URL(origin).hostname;
@@ -1282,6 +1283,18 @@ export function resolveServerOptions(options = {}) {
     ? path.resolve(configuredDataDirectory)
     : path.join(PROJECT_ROOT, ".data");
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+  const instanceToken = String(
+    options.instanceToken ?? process.env.CODEX_TASKBOARD_INSTANCE_TOKEN ?? "",
+  ).trim();
+  if (instanceToken && !/^[a-z0-9-]{16,128}$/i.test(instanceToken)) {
+    throw new Error("CODEX_TASKBOARD_INSTANCE_TOKEN must be an identifier");
+  }
+  const instanceSecret = String(
+    options.instanceSecret ?? process.env.CODEX_TASKBOARD_INSTANCE_SECRET ?? "",
+  ).trim();
+  if (instanceToken && !/^[a-f0-9-]{32,128}$/i.test(instanceSecret)) {
+    throw new Error("CODEX_TASKBOARD_INSTANCE_SECRET must be set in launcher mode");
+  }
   return {
     dataDirectory,
     databasePath: options.databasePath ?? path.join(dataDirectory, "taskboard.sqlite"),
@@ -1294,6 +1307,11 @@ export function resolveServerOptions(options = {}) {
       ?? path.join(codexHome, ".codex-global-state.json"),
     codexProcessesPath: options.codexProcessesPath
       ?? path.join(codexHome, "process_manager", "chat_processes.json"),
+    instanceToken,
+    instanceSecret,
+    version: String(
+      options.version ?? process.env.CODEX_TASKBOARD_VERSION ?? "development",
+    ).trim(),
   };
 }
 
@@ -1315,6 +1333,7 @@ export function resolveHost(value = process.env.CODEX_TASKBOARD_HOST ?? "0.0.0.0
 
 export function createTaskboardServer(options = {}) {
   const resolved = resolveServerOptions(options);
+  const routePrefix = resolved.instanceToken ? `/${resolved.instanceToken}` : "";
   const database = new TaskboardDatabase(resolved.databasePath);
   const events = new EventHub();
   const cloudConfig = options.cloudConfigStore ?? createCloudConfigStore({
@@ -1568,15 +1587,29 @@ export function createTaskboardServer(options = {}) {
     response.setHeader("x-content-type-options", "nosniff");
     response.setHeader("referrer-policy", "no-referrer");
     try {
-      assertTrustedNetworkRequest(request);
+      const incomingUrl = new URL(request.url, "http://127.0.0.1");
+      if (resolved.instanceToken && incomingUrl.pathname !== "/health") {
+        if (
+          incomingUrl.pathname !== routePrefix
+          && !incomingUrl.pathname.startsWith(`${routePrefix}/`)
+        ) {
+          throw new ApiError(404, "NOT_FOUND", "Route not found");
+        }
+        request.url = `${incomingUrl.pathname.slice(routePrefix.length) || "/"}${incomingUrl.search}`;
+      }
+
+      assertTrustedNetworkRequest(request, Boolean(resolved.instanceToken));
       const origin = request.headers.origin;
-      if (TRUSTED_EMBED_ORIGINS.has(origin)) {
+      const trustedEmbedOrigin = TRUSTED_EMBED_ORIGINS.has(origin)
+        || (Boolean(resolved.instanceToken) && origin === "null");
+      if (trustedEmbedOrigin) {
         response.setHeader("access-control-allow-origin", origin);
         response.setHeader("access-control-allow-methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS");
         response.setHeader(
           "access-control-allow-headers",
           request.headers["access-control-request-headers"] ?? "content-type",
         );
+        response.setHeader("access-control-expose-headers", "x-codex-taskboard-proof");
         response.setHeader("access-control-allow-private-network", "true");
         response.setHeader("vary", "origin");
         if (request.method === "OPTIONS") {
@@ -1584,6 +1617,16 @@ export function createTaskboardServer(options = {}) {
           response.end();
           return;
         }
+      }
+      if (resolved.instanceToken && origin === "app://-") {
+        const challenge = request.headers["x-codex-taskboard-challenge"];
+        if (typeof challenge !== "string" || !/^[a-f0-9]{32,128}$/i.test(challenge)) {
+          throw new ApiError(401, "INVALID_INSTANCE_CHALLENGE", "Launcher challenge is required");
+        }
+        response.setHeader(
+          "x-codex-taskboard-proof",
+          createHmac("sha256", resolved.instanceSecret).update(challenge).digest("hex"),
+        );
       }
       const url = new URL(request.url, "http://127.0.0.1");
       const pathname = url.pathname;
@@ -1604,6 +1647,20 @@ export function createTaskboardServer(options = {}) {
 
       if (pathname === "/health") {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        if (resolved.instanceToken) {
+          const challenge = request.headers["x-codex-taskboard-challenge"];
+          if (typeof challenge !== "string" || !/^[a-f0-9]{32,128}$/i.test(challenge)) {
+            throw new ApiError(401, "INVALID_INSTANCE_CHALLENGE", "Launcher challenge is required");
+          }
+          return sendJson(response, 200, {
+            status: "ok",
+            product: "codex-taskboard",
+            version: resolved.version,
+            proof: createHmac("sha256", resolved.instanceSecret)
+              .update(challenge)
+              .digest("hex"),
+          });
+        }
         return sendJson(response, 200, { status: "ok" });
       }
 

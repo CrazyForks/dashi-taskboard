@@ -2,13 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 use std::{
-    ffi::OsString,
-    fs::{self, OpenOptions},
-    io::Write,
+    fs::{self, File, OpenOptions},
+    io::{BufRead, BufReader, Write},
+    net::TcpListener,
+    os::{fd::AsRawFd, unix::process::CommandExt},
     path::{Path, PathBuf},
-    process::Command as StdCommand,
+    process::{Command as StdCommand, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -16,12 +17,9 @@ use std::{
 };
 use tauri::{ActivationPolicy, AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 use tauri_plugin_updater::{Update, UpdaterExt};
+use uuid::Uuid;
 
-const LAUNCHER_PORT: &str = "9231";
-const CODEX_PROFILE_ARGUMENT: &str =
-    "--user-data-dir=/private/tmp/codex-taskboard-independent-profile-v2";
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Serialize)]
@@ -45,16 +43,24 @@ struct LauncherPidRecord {
 }
 
 struct LauncherState {
-    child: Mutex<Option<tauri_plugin_shell::process::CommandChild>>,
+    child: Mutex<Option<u32>>,
     snapshot: Mutex<LauncherSnapshot>,
     intentional_stop: AtomicBool,
+    generation: AtomicU64,
+    lifecycle: Mutex<()>,
+    _instance_lock: File,
     data_directory: PathBuf,
     log_path: PathBuf,
     pid_record_path: PathBuf,
 }
 
 impl LauncherState {
-    fn new(data_directory: PathBuf, log_directory: PathBuf, version: String) -> Self {
+    fn new(
+        data_directory: PathBuf,
+        log_directory: PathBuf,
+        version: String,
+        instance_lock: File,
+    ) -> Self {
         Self {
             child: Mutex::new(None),
             snapshot: Mutex::new(LauncherSnapshot {
@@ -67,11 +73,44 @@ impl LauncherState {
                 child_pid: None,
             }),
             intentional_stop: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
+            lifecycle: Mutex::new(()),
+            _instance_lock: instance_lock,
             pid_record_path: data_directory.join("launcher-child.json"),
             data_directory,
             log_path: log_directory.join("codex-taskboard-launcher.log"),
         }
     }
+}
+
+fn acquire_instance_lock(path: &Path) -> Result<Option<File>, std::io::Error> {
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        Ok(Some(file))
+    } else {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            Ok(None)
+        } else {
+            Err(error)
+        }
+    }
+}
+
+fn reserve_loopback_ports() -> Result<(u16, u16), String> {
+    let taskboard = TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
+    let cdp = TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
+    let taskboard_port = taskboard
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
+    let cdp_port = cdp.local_addr().map_err(|error| error.to_string())?.port();
+    Ok((taskboard_port, cdp_port))
 }
 
 fn update_snapshot(
@@ -122,15 +161,11 @@ fn process_is_running(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
-fn send_sigterm(pid: u32) {
+fn send_process_group_signal(pid: u32, signal: i32) {
     unsafe {
-        libc::kill(pid as i32, libc::SIGTERM);
-    }
-}
-
-fn send_sigkill(pid: u32) {
-    unsafe {
-        libc::kill(pid as i32, libc::SIGKILL);
+        if libc::kill(-(pid as i32), signal) != 0 {
+            libc::kill(pid as i32, signal);
+        }
     }
 }
 
@@ -155,64 +190,15 @@ fn process_matches_record(record: &LauncherPidRecord) -> bool {
         && command.contains(&*record.injector_path.to_string_lossy())
 }
 
-fn stop_stale_processes(state: &LauncherState) {
-    let process_list = StdCommand::new("/bin/ps")
-        .args(["-axo", "pid=,command="])
-        .output();
-    let Ok(process_list) = process_list else {
-        return;
-    };
-
-    for line in String::from_utf8_lossy(&process_list.stdout).lines() {
-        let Some((pid, command)) = line.trim().split_once(char::is_whitespace) else {
-            continue;
-        };
-        let command = command.trim_start();
-        let Ok(pid) = pid.parse::<u32>() else {
-            continue;
-        };
-        let is_taskboard_node = command.starts_with('/')
-            && command.contains("/Codex Taskboard.app/Contents/MacOS/node ");
-        let is_launcher = is_taskboard_node
-            && command
-                .contains("/Codex Taskboard.app/Contents/Resources/app/scripts/codex-injector.mjs")
-            && command.contains(" --launch ")
-            && command.contains(" --watch ")
-            && command.contains(" --open ")
-            && command.contains(" --port 9231");
-        let is_service = is_taskboard_node
-            && command.contains("/Codex Taskboard.app/Contents/Resources/app/server/index.mjs");
-        let executable = command.split_whitespace().next().unwrap_or_default();
-        let is_codex_main = executable.ends_with("/ChatGPT.app/Contents/MacOS/ChatGPT")
-            || executable.ends_with("/Codex.app/Contents/MacOS/Codex");
-        let is_launcher_codex = is_codex_main
-            && command.contains(CODEX_PROFILE_ARGUMENT)
-            && command.contains("--remote-debugging-port=9231")
-            && !command.contains(" --type=");
-        if is_launcher || is_service || is_launcher_codex {
-            append_log(state, &format!("Stopping stale taskboard process {pid}"));
-            send_sigterm(pid);
-            if !wait_for_process_exit(pid, STOP_TIMEOUT) {
-                append_log(
-                    state,
-                    &format!("Force stopping stale taskboard process {pid}"),
-                );
-                send_sigkill(pid);
-                let _ = wait_for_process_exit(pid, Duration::from_secs(1));
-            }
-        }
-    }
-}
-
 fn stop_recorded_child(state: &LauncherState) {
     let record = fs::read_to_string(&state.pid_record_path)
         .ok()
         .and_then(|content| serde_json::from_str::<LauncherPidRecord>(&content).ok());
     if let Some(record) = record {
         if process_matches_record(&record) {
-            send_sigterm(record.pid);
+            send_process_group_signal(record.pid, libc::SIGTERM);
             if !wait_for_process_exit(record.pid, STOP_TIMEOUT) && process_matches_record(&record) {
-                send_sigkill(record.pid);
+                send_process_group_signal(record.pid, libc::SIGKILL);
                 let _ = wait_for_process_exit(record.pid, Duration::from_secs(1));
             }
         }
@@ -245,20 +231,18 @@ fn clear_pid_record(state: &LauncherState, pid: u32) {
     }
 }
 
-fn stop_managed_child(app: &AppHandle, state: &Arc<LauncherState>) {
+fn stop_managed_child_locked(app: &AppHandle, state: &Arc<LauncherState>) {
+    state.generation.fetch_add(1, Ordering::SeqCst);
     state.intentional_stop.store(true, Ordering::SeqCst);
-    let child = state.child.lock().unwrap().take();
-    if let Some(child) = child {
-        let pid = child.pid();
+    if let Some(pid) = state.child.lock().unwrap().take() {
         append_log(state, &format!("Stopping launcher child {pid}"));
-        send_sigterm(pid);
+        send_process_group_signal(pid, libc::SIGTERM);
         if !wait_for_process_exit(pid, STOP_TIMEOUT) {
-            let _ = child.kill();
+            send_process_group_signal(pid, libc::SIGKILL);
             let _ = wait_for_process_exit(pid, Duration::from_secs(1));
         }
         clear_pid_record(state, pid);
     }
-    stop_stale_processes(state);
     update_snapshot(app, state, |snapshot| {
         snapshot.phase = "stopped".into();
         snapshot.message = "任务面板已停止。".into();
@@ -266,8 +250,45 @@ fn stop_managed_child(app: &AppHandle, state: &Arc<LauncherState>) {
     });
 }
 
-fn start_launcher(app: &AppHandle, state: &Arc<LauncherState>) -> Result<LauncherSnapshot, String> {
-    if state.snapshot.lock().unwrap().child_pid.is_some() {
+fn stop_managed_child(app: &AppHandle, state: &Arc<LauncherState>) {
+    let _lifecycle = state.lifecycle.lock().unwrap();
+    stop_managed_child_locked(app, state);
+}
+
+fn watch_launcher_output<R: std::io::Read + Send + 'static>(
+    reader: R,
+    is_stderr: bool,
+    app: AppHandle,
+    state: Arc<LauncherState>,
+) {
+    thread::spawn(move || {
+        for line in BufReader::new(reader).lines().map_while(Result::ok) {
+            append_log(&state, &line);
+            if is_stderr && line.contains("Waiting for Codex") {
+                update_snapshot(&app, &state, |snapshot| {
+                    snapshot.phase = "starting".into();
+                    snapshot.message = "正在等待 Codex 窗口…".into();
+                });
+            } else if !is_stderr && line.contains("Codex Taskboard listening") {
+                update_snapshot(&app, &state, |snapshot| {
+                    snapshot.phase = "starting".into();
+                    snapshot.message = "任务面板服务已启动，正在注入 Codex…".into();
+                });
+            } else if !is_stderr && line.contains("\"injected\"") {
+                update_snapshot(&app, &state, |snapshot| {
+                    snapshot.phase = "running".into();
+                    snapshot.message = "任务面板已在 Codex 客户端中打开。".into();
+                });
+            }
+        }
+    });
+}
+
+fn start_launcher_locked(
+    app: &AppHandle,
+    state: &Arc<LauncherState>,
+) -> Result<LauncherSnapshot, String> {
+    if state.child.lock().unwrap().is_some() {
         return Ok(state.snapshot.lock().unwrap().clone());
     }
 
@@ -286,8 +307,8 @@ fn start_launcher(app: &AppHandle, state: &Arc<LauncherState>) -> Result<Launche
         .parent()
         .ok_or_else(|| "无法定位 App 可执行文件目录".to_string())?
         .join("node");
-    stop_stale_processes(state);
     stop_recorded_child(state);
+    let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     state.intentional_stop.store(false, Ordering::SeqCst);
     update_snapshot(app, state, |snapshot| {
         snapshot.phase = "starting".into();
@@ -299,130 +320,121 @@ fn start_launcher(app: &AppHandle, state: &Arc<LauncherState>) -> Result<Launche
         "{}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         resource_directory.join("bin").display()
     );
-    let arguments = vec![
-        injector_path.as_os_str().to_owned(),
-        OsString::from("--launch"),
-        OsString::from("--watch"),
-        OsString::from("--open"),
-        OsString::from("--port"),
-        OsString::from(LAUNCHER_PORT),
-        OsString::from("--app-path"),
-        codex_app.as_os_str().to_owned(),
-    ];
-    let (mut receiver, child) = app
-        .shell()
-        .sidecar("node")
-        .map_err(|error| error.to_string())?
-        .args(arguments)
+    let (taskboard_port, cdp_port) = reserve_loopback_ports()?;
+    let instance_token = Uuid::new_v4().to_string();
+    let instance_secret = Uuid::new_v4().to_string();
+    let version = state.snapshot.lock().unwrap().version.clone();
+    let codex_profile = state.data_directory.join("codex-profile");
+    let mut child = StdCommand::new(&node_path)
+        .arg(&injector_path)
+        .args(["--launch", "--watch", "--open", "--port"])
+        .arg(cdp_port.to_string())
+        .args(["--startup-token", &instance_token, "--app-path"])
+        .arg(&codex_app)
         .env("CODEX_TASKBOARD_DATA_DIR", &state.data_directory)
         .env("CODEX_TASKBOARD_HOST", "127.0.0.1")
+        .env("CODEX_TASKBOARD_PORT", taskboard_port.to_string())
+        .env("CODEX_TASKBOARD_INSTANCE_TOKEN", &instance_token)
+        .env("CODEX_TASKBOARD_INSTANCE_SECRET", &instance_secret)
+        .env("CODEX_TASKBOARD_VERSION", &version)
+        .env(
+            "CODEX_TASKBOARD_CODEX_PROFILE",
+            codex_profile.to_string_lossy().as_ref(),
+        )
         .env("HOST", "127.0.0.1")
         .env("PATH", path_value)
         .current_dir(&app_root)
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| error.to_string())?;
-    let pid = child.pid();
+    let pid = child.id();
     if let Err(error) = write_pid_record(state, pid, node_path, injector_path) {
-        let _ = child.kill();
+        send_process_group_signal(pid, libc::SIGKILL);
+        let _ = child.wait();
         return Err(error);
     }
-    *state.child.lock().unwrap() = Some(child);
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    *state.child.lock().unwrap() = Some(pid);
     let snapshot = update_snapshot(app, state, |snapshot| {
         snapshot.child_pid = Some(pid);
     });
-    append_log(state, &format!("Started launcher child {pid}"));
+    append_log(
+        state,
+        &format!("Started launcher child {pid} on Taskboard {taskboard_port} and CDP {cdp_port}"),
+    );
+    if let Some(stdout) = stdout {
+        watch_launcher_output(stdout, false, app.clone(), state.clone());
+    }
+    if let Some(stderr) = stderr {
+        watch_launcher_output(stderr, true, app.clone(), state.clone());
+    }
 
     let event_app = app.clone();
     let event_state = state.clone();
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = receiver.recv().await {
-            match event {
-                CommandEvent::Stdout(bytes) => {
-                    let line = String::from_utf8_lossy(&bytes);
-                    append_log(&event_state, &line);
-                    if line.contains("Codex Taskboard listening") {
-                        update_snapshot(&event_app, &event_state, |snapshot| {
-                            snapshot.phase = "starting".into();
-                            snapshot.message = "任务面板服务已启动，正在注入 Codex…".into();
-                        });
-                    } else if line.contains("\"injected\"") {
-                        update_snapshot(&event_app, &event_state, |snapshot| {
-                            snapshot.phase = "running".into();
-                            snapshot.message = "任务面板已在 Codex 客户端中打开。".into();
-                        });
-                    }
-                }
-                CommandEvent::Stderr(bytes) => {
-                    let line = String::from_utf8_lossy(&bytes);
-                    append_log(&event_state, &line);
-                    if line.contains("Waiting for Codex") {
-                        update_snapshot(&event_app, &event_state, |snapshot| {
-                            snapshot.phase = "starting".into();
-                            snapshot.message = "正在等待 Codex 窗口…".into();
-                        });
-                    }
-                }
-                CommandEvent::Error(error) => {
-                    append_log(&event_state, &format!("Launcher process error: {error}"));
-                    update_snapshot(&event_app, &event_state, |snapshot| {
-                        snapshot.phase = "error".into();
-                        snapshot.message = format!("任务面板进程出错：{error}");
-                    });
-                }
-                CommandEvent::Terminated(payload) => {
-                    append_log(
-                        &event_state,
-                        &format!(
-                            "Launcher child {pid} exited: code={:?}, signal={:?}",
-                            payload.code, payload.signal
-                        ),
-                    );
-                    let current_pid = event_state.snapshot.lock().unwrap().child_pid;
-                    if current_pid == Some(pid) {
-                        event_state.child.lock().unwrap().take();
-                        clear_pid_record(&event_state, pid);
-                        let intentional = event_state.intentional_stop.load(Ordering::SeqCst);
-                        update_snapshot(&event_app, &event_state, |snapshot| {
-                            snapshot.child_pid = None;
-                            if !intentional {
-                                snapshot.phase = "error".into();
-                                snapshot.message = "任务面板进程已退出，正在恢复…".into();
-                            }
-                        });
-                        if !intentional {
-                            let restart_app = event_app.clone();
-                            let restart_state = event_state.clone();
-                            tauri::async_runtime::spawn_blocking(move || {
-                                thread::sleep(Duration::from_secs(2));
-                                if restart_state.intentional_stop.load(Ordering::SeqCst) {
-                                    return;
-                                }
-                                if let Err(error) = start_launcher(&restart_app, &restart_state) {
-                                    append_log(
-                                        &restart_state,
-                                        &format!("Launcher recovery failed: {error}"),
-                                    );
-                                    update_snapshot(&restart_app, &restart_state, |snapshot| {
-                                        snapshot.phase = "error".into();
-                                        snapshot.message = error.clone();
-                                    });
-                                    show_error_dialog(
-                                        &restart_app,
-                                        "Codex Taskboard 恢复失败",
-                                        &format!(
-                                            "任务面板进程无法恢复：{error}\n\n请重新打开 App。"
-                                        ),
-                                    );
-                                }
-                            });
-                        }
-                    }
-                }
-                _ => {}
+    thread::spawn(move || {
+        let status = child.wait();
+        append_log(
+            &event_state,
+            &format!("Launcher child {pid} exited: {status:?}"),
+        );
+        if event_state.generation.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        let mut current_child = event_state.child.lock().unwrap();
+        if *current_child != Some(pid) {
+            return;
+        }
+        *current_child = None;
+        drop(current_child);
+        clear_pid_record(&event_state, pid);
+        let intentional = event_state.intentional_stop.load(Ordering::SeqCst);
+        update_snapshot(&event_app, &event_state, |snapshot| {
+            snapshot.child_pid = None;
+            if !intentional {
+                snapshot.phase = "error".into();
+                snapshot.message = "任务面板进程已退出，正在恢复…".into();
             }
+        });
+        if intentional {
+            return;
+        }
+        thread::sleep(Duration::from_secs(2));
+        if event_state.intentional_stop.load(Ordering::SeqCst)
+            || event_state.generation.load(Ordering::SeqCst) != generation
+        {
+            return;
+        }
+        if let Err(error) = start_launcher(&event_app, &event_state) {
+            append_log(&event_state, &format!("Launcher recovery failed: {error}"));
+            update_snapshot(&event_app, &event_state, |snapshot| {
+                snapshot.phase = "error".into();
+                snapshot.message = error.clone();
+            });
+            show_error_dialog(
+                &event_app,
+                "Codex Taskboard 恢复失败",
+                &format!("任务面板进程无法恢复：{error}\n\n请重新打开 App。"),
+            );
         }
     });
     Ok(snapshot)
+}
+
+fn start_launcher(app: &AppHandle, state: &Arc<LauncherState>) -> Result<LauncherSnapshot, String> {
+    let _lifecycle = state.lifecycle.lock().unwrap();
+    start_launcher_locked(app, state)
+}
+
+fn restart_launcher(
+    app: &AppHandle,
+    state: &Arc<LauncherState>,
+) -> Result<LauncherSnapshot, String> {
+    let _lifecycle = state.lifecycle.lock().unwrap();
+    stop_managed_child_locked(app, state);
+    start_launcher_locked(app, state)
 }
 
 async fn check_for_startup_update(
@@ -602,7 +614,6 @@ async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             app.set_activation_policy(ActivationPolicy::Accessory);
@@ -611,8 +622,18 @@ fn main() {
             let log_directory = home_directory.join("Library/Logs/Codex Taskboard");
             fs::create_dir_all(&data_directory)?;
             fs::create_dir_all(&log_directory)?;
+            let Some(instance_lock) = acquire_instance_lock(&data_directory.join("launcher.lock"))?
+            else {
+                app.handle().exit(0);
+                return Ok(());
+            };
             let version = app.package_info().version.to_string();
-            let state = Arc::new(LauncherState::new(data_directory, log_directory, version));
+            let state = Arc::new(LauncherState::new(
+                data_directory,
+                log_directory,
+                version,
+                instance_lock,
+            ));
             app.manage(state.clone());
 
             let app_handle = app.handle().clone();
@@ -641,9 +662,10 @@ fn main() {
     app.run(|app_handle, event| match event {
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => {
-            let state = app_handle.state::<Arc<LauncherState>>();
-            stop_managed_child(app_handle, &state);
-            if let Err(error) = start_launcher(app_handle, &state) {
+            let Some(state) = app_handle.try_state::<Arc<LauncherState>>() else {
+                return;
+            };
+            if let Err(error) = restart_launcher(app_handle, &state) {
                 append_log(&state, &format!("Launcher reopen failed: {error}"));
                 show_error_dialog(
                     app_handle,
@@ -653,8 +675,9 @@ fn main() {
             }
         }
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-            let state = app_handle.state::<Arc<LauncherState>>();
-            stop_managed_child(app_handle, &state);
+            if let Some(state) = app_handle.try_state::<Arc<LauncherState>>() {
+                stop_managed_child(app_handle, &state);
+            }
         }
         _ => {}
     });

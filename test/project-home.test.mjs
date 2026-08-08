@@ -37,7 +37,7 @@ test("project selection starts from the route or recent projects and updates the
   assert.match(appSource, /const RECENT_PROJECT_IDS_KEY = "taskboard\.recentProjectIds\.v1"/);
   assert.match(appSource, /const initialProjectId = query\.get\("project"\) \?\? recentProjectIds\[0\] \?\? GLOBAL_PROJECT_ID/);
   assert.match(appSource, /const rememberProjectOpen = useCallback/);
-  assert.match(appSource, /window\.localStorage\.setItem\(RECENT_PROJECT_IDS_KEY, JSON\.stringify\(next\)\)/);
+  assert.match(appSource, /taskboardStorage\.setItem\(RECENT_PROJECT_IDS_KEY, JSON\.stringify\(next\)\)/);
   assert.match(appSource, /function changeProject\(projectId: string\)/);
   assert.match(appSource, /setSelectedProjectId\(projectId\)/);
   assert.match(appSource, /const url = buildIssueUrl\(window\.location\.href, projectId, null\)/);
@@ -116,7 +116,7 @@ test("embedded mode omits the app navigation and keeps a draggable header region
 });
 
 test("realtime updates remain active on the project home and reconcile after reconnecting", () => {
-  assert.match(appSource, /useEffect\(\(\) => \{\s*const source = new EventSource\("\/api\/events"\)/);
+  assert.match(appSource, /useEffect\(\(\) => \{\s*const source = new EventSource\(resolveTaskboardUrl\("\/api\/events"\)\)/);
   assert.match(appSource, /event\.type\.startsWith\("task\."\)[\s\S]*?scheduleRefresh\(\{ projects: true, tasks: affectsSelectedProject \}\)/);
   assert.match(appSource, /source\.onopen = \(\) => \{[\s\S]*?scheduleRefresh\(\{ projects: true, tasks: Boolean\(selectedProjectId\) \}\)/);
 });

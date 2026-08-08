@@ -21,14 +21,16 @@ test("injection is an idempotent IIFE guarded by its current source hash", () =>
   assert.match(source, /window\[SENTINEL_KEY\] = api/);
 });
 
-test("embedded page uses the local taskboard URL and supports a runtime override", () => {
+test("embedded page uses the launcher URL inside an opaque sandbox", () => {
   assert.match(source, /http:\/\/127\.0\.0\.1:47823\/\?host=codex/);
   assert.match(source, /window\.__CODEX_TASKBOARD_URL__/);
-  assert.match(source, /fetch\(sourceUrl, \{ cache: "no-store" \}\)/);
-  assert.match(source, /new Blob\(\[bootstrapHtml\], \{ type: "text\/html" \}\)/);
-  assert.match(source, /nextFrame\.src = frameBlobUrl/);
+  assert.match(source, /nextFrame\.name = frameName/);
+  assert.match(source, /nextFrame\.src = "about:blank"/);
+  assert.match(source, /requestHost\("load-frame", \{ frameName \}\)/);
+  assert.match(source, /nextFrame\.setAttribute\("sandbox", "allow-scripts/);
   assert.match(source, /taskboardOrigin = taskboardUrl\.origin/);
-  assert.match(source, /frameOrigin = window\.location\.origin/);
+  assert.match(source, /frameOrigin = "null"/);
+  assert.doesNotMatch(source, /allow-same-origin/);
 });
 
 test("entry clones the native Plugins row and the page covers the complete Codex workspace", () => {
@@ -115,12 +117,12 @@ test("the embedded header exposes Codex's native sidebar expansion when collapse
 });
 
 test("opening asks the resident launcher to ensure the service and rebuilds failed frames", () => {
-  assert.match(source, /const HOST_BINDING_NAME = "__codexTaskboardHostV1"/);
+  assert.match(source, /const HOST_REQUEST_MESSAGE = "__codexTaskboardHostRequestV1"/);
   assert.match(source, /return requestHost\("ensure"\)/);
   assert.match(source, /result\.restarted/);
   assert.match(source, /loadTaskboardFrame\(\)/);
   assert.match(source, /waitForFrameReady\(\)/);
-  assert.match(source, /hostResponse: onHostResponse/);
+  assert.match(source, /function onHostBridgeMessage/);
   assert.match(source, /function hasLiveHostBinding/);
   assert.match(source, /HOST_HEARTBEAT_MAX_AGE_MS/);
 });
@@ -149,14 +151,14 @@ test("reopening reuses a ready cache-busted iframe without showing the startup p
   assert.doesNotMatch(prepareSource, /async function prepareTaskboard\(generation\) \{\s*showLoading\(\);/);
 });
 
-test("iframe messages require both the exact origin and source window", () => {
+test("opaque iframe messages require both the null origin and exact source window", () => {
   assert.match(
     source,
     /event\.source !== frame\.contentWindow \|\| event\.origin !== frameOrigin/,
   );
   assert.match(source, /message\.type === "taskboard:open-thread"/);
   assert.match(source, /message\.type === "taskboard:create-thread"/);
-  assert.match(source, /postMessage\(message, frameOrigin\)/);
+  assert.match(source, /postMessage\(message, frameOrigin === "null" \? "\*" : frameOrigin\)/);
 });
 
 test("the iframe automation contract is forwarded through the fixed host binding", () => {
@@ -174,7 +176,10 @@ test("the iframe automation contract is forwarded through the fixed host binding
   assert.match(source, /requestId,\s*ok: true,\s*item: response\.item/);
   assert.match(source, /items: response\.items/);
   assert.match(source, /requestId,\s*ok: false,\s*error:/);
-  assert.match(source, /binding\(JSON\.stringify\(\{ \.\.\.payload, id, action \}\)\)/);
+  assert.match(source, /type: HOST_REQUEST_MESSAGE/);
+  assert.match(source, /capability: HOST_CAPABILITY/);
+  assert.match(source, /event\.source !== window/);
+  assert.doesNotMatch(source, /window\[HOST_BINDING_NAME\]/);
 });
 
 test("complete App automation payloads cross the injected forwarder into the current parser", () => {

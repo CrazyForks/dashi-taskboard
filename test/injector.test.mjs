@@ -11,9 +11,15 @@ const packageJson = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 );
 
-test("the resident injector supervises the fixed local Taskboard service", () => {
+test("the resident injector authenticates its launcher-managed Taskboard service", () => {
   assert.match(source, /function createTaskboardSupervisor/);
-  assert.match(source, /await isReachable\(taskboardHealthUrl\)/);
+  assert.match(source, /CODEX_TASKBOARD_INSTANCE_TOKEN/);
+  assert.match(source, /createHmac\("sha256"/);
+  assert.match(source, /x-codex-taskboard-challenge/);
+  assert.match(source, /proof/);
+  assert.match(source, /taskboardInstanceSecret/);
+  assert.match(source, /Page\.setDocumentContent/);
+  assert.match(runtimeSource, /request\.action === "load-frame"/);
   assert.match(source, /ensureInFlight/);
   assert.match(source, /await supervisor\.ensure\(\)/);
   assert.match(source, /it will be restarted automatically/);
@@ -28,11 +34,13 @@ test("the CDP bridge accepts service ensure and native instruction composer pref
   assert.match(source, /function prefillTaskComposerViaCdp/);
   assert.match(source, /cdp\.send\("Input\.insertText", \{ text: instruction \}\)/);
   assert.match(source, /Runtime\.bindingCalled/);
+  assert.match(source, /Page\.createIsolatedWorld/);
+  assert.match(source, /Runtime\.addBinding", \{\s*name: hostBindingName,\s*executionContextId:/);
+  assert.match(source, /params\.executionContextId !== activeContextId/);
   assert.match(runtimeSource, /params\.executionContextId/);
-  assert.match(source, /hostResponse/);
-  assert.match(source, /if \(keepAlive\) await installTaskboardHostBinding/);
-  assert.match(source, /publishHostHeartbeat/);
-  assert.match(source, /__codexTaskboardHostHeartbeatV1/);
+  assert.match(source, /hostResponseMessage/);
+  assert.match(source, /if \(keepAlive\) await hostBridge\.install\(\)/);
+  assert.match(source, /hostBridge\.publishHeartbeat/);
 });
 
 test("the CDP bridge exposes only the fixed Taskboard automation operations", () => {
@@ -91,6 +99,6 @@ test("a completed web build refreshes an already-open Codex iframe", () => {
 });
 
 test("the injected iframe follows the configured local service port", () => {
-  assert.match(source, /const taskboardPageUrl = `\$\{taskboardOrigin\}\/\?host=codex`/);
+  assert.match(source, /const taskboardPageUrl = `\$\{taskboardOrigin\}\/\$\{encodeURIComponent\(taskboardInstanceToken\)\}\/\?host=codex`/);
   assert.match(source, /window\.__CODEX_TASKBOARD_URL__ = \$\{JSON\.stringify\(taskboardPageUrl\)\}/);
 });

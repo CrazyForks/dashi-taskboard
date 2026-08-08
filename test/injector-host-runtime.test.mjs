@@ -23,6 +23,27 @@ const currentAutomationRequest = {
   reasoningEffort: "ultra",
 };
 
+test("a binding call from the wrong execution context cannot reach native actions", async () => {
+  const calls = [];
+  const result = await handleHostBindingPayload(
+    {
+      payload: JSON.stringify({ id: "host-request-2", action: "ensure" }),
+      executionContextId: 44,
+    },
+    {
+      isAuthorizedContext: (executionContextId) => executionContextId === 12,
+      parseAutomationRequest: () => null,
+      ensure: async () => calls.push("ensure"),
+      runAutomation: async () => calls.push("automation"),
+      prefill: async () => calls.push("prefill"),
+      sendResponse: async () => calls.push("response"),
+    },
+  );
+
+  assert.deepEqual(result, { responded: false, accepted: false });
+  assert.deepEqual(calls, []);
+});
+
 test("a stale automation parser receives an immediate host error instead of timing out", async () => {
   const responses = [];
   const staleParser = () => null;

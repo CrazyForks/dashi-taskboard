@@ -20,6 +20,11 @@ function parseHostRequest(payload, parseAutomationRequest) {
   ) ? request.id : null;
   if (!id) return { id: null, request: null, error: HOST_REQUEST_ERROR };
   if (request.action === "ensure") return { id, request, error: null };
+  if (
+    request.action === "load-frame"
+    && typeof request.frameName === "string"
+    && /^codex-taskboard-[a-f0-9-]{36,80}$/i.test(request.frameName)
+  ) return { id, request, error: null };
   if (request.action === "automation") {
     const parsed = parseAutomationRequest(request);
     return parsed
@@ -43,6 +48,13 @@ function parseHostRequest(payload, parseAutomationRequest) {
 }
 
 export async function handleHostBindingPayload(params, handlers) {
+  if (
+    typeof handlers.isAuthorizedContext === "function"
+    && !handlers.isAuthorizedContext(params.executionContextId)
+  ) {
+    return { responded: false, accepted: false };
+  }
+
   const parsed = parseHostRequest(params.payload, handlers.parseAutomationRequest);
   if (!parsed.request) {
     if (!parsed.id) return { responded: false, accepted: false };
@@ -59,6 +71,8 @@ export async function handleHostBindingPayload(params, handlers) {
     let result;
     if (parsed.request.action === "ensure") {
       result = await handlers.ensure();
+    } else if (parsed.request.action === "load-frame") {
+      result = await handlers.loadFrame(parsed.request);
     } else if (parsed.request.action === "automation") {
       result = await handlers.runAutomation(parsed.request, params.executionContextId);
     } else {

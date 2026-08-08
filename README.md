@@ -7,8 +7,8 @@ Codex Taskboard 是一个本地优先的任务面板。它可在浏览器中运�
 ### 操作路径
 
 1. 用户打开 `Codex Taskboard.app`。
-2. App 从自身资源启动 Node.js 和本地任务面板服务。服务只监听 `127.0.0.1:47823`。
-3. App 启动官方 Codex/ChatGPT 客户端的独立窗口，并通过 CDP 注入任务面板入口。
+2. App 从自身资源启动 Node.js 和本地任务面板服务。服务只监听 `127.0.0.1` 上的本次启动随机端口。
+3. App 用本次启动的随机 CDP 端口启动官方 Codex/ChatGPT 客户端独立窗口，并注入任务面板入口。
 4. 用户在 Codex 侧栏打开任务面板。启动器不显示主窗口或 Dock 图标；正常启动、等待和无更新结果只写入日志。只有发现更新、启动失败，或用户确认更新后发生失败时才显示原生弹窗。
 5. 用户修改任务、评论或附件。服务把数据写入 `~/Library/Application Support/Codex Taskboard`，并把变化推送到所有已打开的面板。
 
@@ -18,7 +18,7 @@ App 不修改官方客户端的 `app.asar`。App 自带 Node.js、服务、Web �
 
 ### 系统要求
 
-- macOS 12 或更高版本。
+- macOS 14 或更高版本。
 - Apple Silicon 或 Intel Mac。GitHub Release 提供同一个 universal 安装包。
 - 已安装官方 Codex/ChatGPT 客户端。支持以下位置：
   - `/Applications/ChatGPT.app`
@@ -108,7 +108,7 @@ npm start
 
 ## 发布 macOS App
 
-`.github/workflows/check.yml` 在 PR 中使用 macOS runner 准备内置 Node，并编译两个 macOS Rust target。`.github/workflows/release-macos.yml` 只接受 `app-v*` 标签推送或手动触发。它使用 Node.js 22、Rust 1.88 和两个 macOS Rust target 构建 universal 包，然后创建 GitHub Draft Release。所有第三方 Action 都锁定到完整提交 SHA；工作流不会自动发布 Draft。
+`.github/workflows/check.yml` 在 PR 中使用 macOS runner 准备内置 Node，并构建真实的 unsigned universal App bundle。`.github/workflows/release-macos.yml` 只接受 `app-v*` 标签推送。它验证标签提交属于 `main`，并确认 `package.json`、`Cargo.toml` 和 `tauri.conf.json` 的版本一致，然后使用 Node.js 22、Rust 1.88 和两个 macOS Rust target 构建 universal 包并创建 GitHub Draft Release。所有第三方 Action 都锁定到完整提交 SHA；工作流不会自动发布 Draft。
 
 内置 Node 版本固定为 `22.23.2`。arm64 与 x64 安装包的 SHA-256 已写入 `scripts/prepare-tauri-app.mjs`，构建不会信任与安装包同源、临时下载的校验清单。
 
@@ -134,7 +134,7 @@ npm start
 
 ### 发布 `app-v0.2.0`
 
-1. 在 PR 中把 `package.json`、`package-lock.json` 和 `src-tauri/tauri.conf.json` 的版本同步为 `0.2.0`。
+1. 在 PR 中把 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml` 和 `src-tauri/tauri.conf.json` 的版本同步为 `0.2.0`。
 2. 合并已审核的 PR。
 3. 确认所有 GitHub Secrets 已配置。
 4. 在已合并提交上创建并推送标签：
@@ -143,8 +143,6 @@ npm start
    git tag -a app-v0.2.0 -m "Codex Taskboard 0.2.0"
    git push origin app-v0.2.0
    ```
-
-   也可从 Actions 手动运行 `Release macOS`，并输入 `app-v0.2.0`。工作流会拒绝与 `tauri.conf.json` 版本不一致的标签。
 
 5. 等待工作流创建 Draft Release。不要直接发布。
 6. 完成下方检查后，人工发布 Draft。
@@ -228,7 +226,7 @@ CODEX_TASKBOARD_HOST=127.0.0.1 npm run codex
 npm run codex:inject -- --port 9229 --open
 ```
 
-Codex 26.715.52143 的 renderer CSP 会阻止任意 HTTP iframe。启动器使用 CDP 绕过该 renderer 的 CSP，并等待 Taskboard OOPIF 实际加载。CDP 端口不验证同机进程身份，只在运行受信任本地代码时使用。
+Codex 26.715.52143 的 renderer CSP 会阻止任意 HTTP iframe。启动器使用 CDP 绕过该 renderer 的 CSP，并等待隔离的 Taskboard iframe 实际加载。正式 App 每次启动使用新的随机 CDP 端口和服务身份令牌；本地开发命令中的固定 CDP 端口只用于受信任的本机开发环境。
 
 “在对话中打开”会选择对应的原生 Codex 项目，并打开带任务标识的未发送原生 composer。任务实际处理后，`taskctl` 从 `CODEX_THREAD_ID` 记录会话。记录的会话可通过 Codex 原生路由打开。每个任务可绑定一个 Git 分支或 worktree。
 

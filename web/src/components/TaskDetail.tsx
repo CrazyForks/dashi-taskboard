@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { taskboardStorage } from "../storage";
 import {
   ApiError,
   attachmentContentUrl,
@@ -324,7 +325,7 @@ export function TaskDetail({
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [commentSegments, setCommentSegments] = useState<InlineMediaSegment[]>(
     () => createInlineMediaSegments(
-      window.localStorage.getItem(`taskboard.comment-draft.${task.id}`) ?? "",
+      taskboardStorage.getItem(`taskboard.comment-draft.${task.id}`) ?? "",
     ),
   );
   const [pendingCommentFiles, setPendingCommentFiles] = useState<File[]>([]);
@@ -408,8 +409,8 @@ export function TaskDetail({
   useEffect(() => {
     const key = `taskboard.comment-draft.${task.id}`;
     const text = inlineMediaText(commentSegments);
-    if (text) window.localStorage.setItem(key, text);
-    else window.localStorage.removeItem(key);
+    if (text) taskboardStorage.setItem(key, text);
+    else taskboardStorage.removeItem(key);
   }, [commentSegments, task.id]);
 
   useEffect(() => {

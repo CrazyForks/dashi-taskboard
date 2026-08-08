@@ -4,18 +4,12 @@ on:
   push:
     tags:
       - "app-v*"
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "要创建的版本标签，例如 app-v0.2.0"
-        required: true
-        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-macos-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+  group: release-macos-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -29,6 +23,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up Node.js 22
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
@@ -36,24 +31,29 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Resolve release tag
+      - name: Validate immutable release tag and versions
         env:
-          DISPATCH_TAG: ${{ inputs.release_tag }}
-          EVENT_NAME: ${{ github.event_name }}
-          REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            RELEASE_TAG="$DISPATCH_TAG"
-          else
-            RELEASE_TAG="$REF_NAME"
-          fi
-
-          APP_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          if [[ "$RELEASE_TAG" != "app-v$APP_VERSION" ]]; then
-            echo "发布标签必须与 src-tauri/tauri.conf.json 的版本一致。" >&2
+          git fetch --no-tags origin main
+          TAG_COMMIT="$(git rev-parse "$RELEASE_TAG^{}")"
+          if [[ "$TAG_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "标签提交与当前工作流提交不一致。" >&2
             exit 1
           fi
+          git merge-base --is-ancestor "$TAG_COMMIT" origin/main
 
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          CARGO_VERSION="$(node -e 'const fs=require("fs"); const source=fs.readFileSync("src-tauri/Cargo.toml","utf8"); console.log(source.match(/^version = "([^"]+)"/m)[1])')"
+          TAURI_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [[ "$PACKAGE_VERSION" != "$CARGO_VERSION" || "$PACKAGE_VERSION" != "$TAURI_VERSION" ]]; then
+            echo "package.json、Cargo.toml 和 tauri.conf.json 的版本必须一致。" >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_TAG" != "app-v$PACKAGE_VERSION" ]]; then
+            echo "发布标签必须与应用版本一致。" >&2
+            exit 1
+          fi
           echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
 
       - name: Set up Rust 1.88

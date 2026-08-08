@@ -148,7 +148,7 @@ test("AI chat API uses the stable local contract and never sends cwd or hidden p
   assert.match(apiSource, /\/api\/local\/ai\/threads/);
   assert.match(apiSource, /\/turns/);
   assert.match(apiSource, /\/interrupt/);
-  assert.match(apiSource, /new EventSource\(`\/api\/local\/ai\/threads\//);
+  assert.match(apiSource, /resolveTaskboardUrl\(`\/api\/local\/ai\/threads\//);
   assert.doesNotMatch(apiSource, /hiddenPrompt|workspacePath:\s*input|argv|cwd/);
 });
 

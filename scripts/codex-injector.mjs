@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -23,7 +23,9 @@ import { readCodexQuotaStatus } from "./codex-rate-limits.mjs";
 const injectorPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(injectorPath), "..");
 const defaultCodexDebuggingPort = 9229;
-const independentCodexProfilePath = "/private/tmp/codex-taskboard-independent-profile-v2";
+const independentCodexProfilePath = process.env.CODEX_TASKBOARD_CODEX_PROFILE
+  ? path.resolve(process.env.CODEX_TASKBOARD_CODEX_PROFILE)
+  : "/private/tmp/codex-taskboard-independent-profile-v2";
 const injectionPath = path.join(projectRoot, "inject", "codex-taskboard.user.js");
 const taskboardDataDirectory = process.env.CODEX_TASKBOARD_DATA_DIR
   ? path.resolve(process.env.CODEX_TASKBOARD_DATA_DIR)
@@ -32,12 +34,25 @@ const automationPoliciesPath = path.join(
   taskboardDataDirectory,
   "codex-automation-policies.json",
 );
+const taskboardInstanceToken = (
+  process.env.CODEX_TASKBOARD_INSTANCE_TOKEN?.trim() || randomUUID()
+);
+process.env.CODEX_TASKBOARD_INSTANCE_TOKEN = taskboardInstanceToken;
+const taskboardInstanceSecret = (
+  process.env.CODEX_TASKBOARD_INSTANCE_SECRET?.trim() || randomBytes(32).toString("hex")
+);
+process.env.CODEX_TASKBOARD_INSTANCE_SECRET = taskboardInstanceSecret;
+const taskboardVersion = process.env.CODEX_TASKBOARD_VERSION?.trim() || "development";
+process.env.CODEX_TASKBOARD_VERSION = taskboardVersion;
 const taskboardOrigin = `http://127.0.0.1:${resolvePort()}`;
 const taskboardHealthUrl = `${taskboardOrigin}/health`;
-const taskboardPageUrl = `${taskboardOrigin}/?host=codex`;
+const taskboardPageUrl = `${taskboardOrigin}/${encodeURIComponent(taskboardInstanceToken)}/?host=codex`;
 const hostBindingName = "__codexTaskboardHostV1";
-const hostHeartbeatName = "__codexTaskboardHostHeartbeatV1";
+const hostRequestMessage = "__codexTaskboardHostRequestV1";
+const hostResponseMessage = "__codexTaskboardHostResponseV1";
+const hostHeartbeatMessage = "__codexTaskboardHostHeartbeatV1";
 const hostStartupTokenName = "__codexTaskboardHostStartupTokenV1";
+const hostCapability = randomUUID();
 const injectionSourceHashName = "__CODEX_TASKBOARD_SOURCE_HASH__";
 const injectionScriptIdentifierName = "__CODEX_TASKBOARD_SCRIPT_IDENTIFIER__";
 const codexAutomationMethods = new Set([
@@ -114,6 +129,27 @@ async function isReachable(url) {
   }
 }
 
+async function isTaskboardReachable() {
+  const challenge = randomBytes(32).toString("hex");
+  try {
+    const response = await fetch(taskboardHealthUrl, {
+      headers: { "x-codex-taskboard-challenge": challenge },
+      signal: AbortSignal.timeout(1_500),
+    });
+    if (!response.ok) return false;
+    const body = await response.json();
+    const proof = createHmac("sha256", taskboardInstanceSecret)
+      .update(challenge)
+      .digest("hex");
+    return body?.status === "ok"
+      && body.product === "codex-taskboard"
+      && body.version === taskboardVersion
+      && body.proof === proof;
+  } catch {
+    return false;
+  }
+}
+
 async function waitUntilReachable(url, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -121,6 +157,15 @@ async function waitUntilReachable(url, timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`Timed out waiting for ${url}`);
+}
+
+async function waitUntilTaskboardReachable(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isTaskboardReachable()) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Timed out waiting for authenticated ${taskboardHealthUrl}`);
 }
 
 function startTaskboard({ detached }) {
@@ -138,7 +183,7 @@ function createTaskboardSupervisor({ detached }) {
   let stopping = false;
 
   async function ensure({ force = false } = {}) {
-    const reachable = await isReachable(taskboardHealthUrl);
+    const reachable = await isTaskboardReachable();
     if (stopping) throw new Error("Taskboard supervisor is stopping");
     if (reachable) {
       return { status: "ok", restarted: false };
@@ -151,7 +196,7 @@ function createTaskboardSupervisor({ detached }) {
     ensureInFlight = (async () => {
       if (child?.exitCode === null && !child.killed) {
         try {
-          await waitUntilReachable(taskboardHealthUrl, 3_000);
+          await waitUntilTaskboardReachable(3_000);
           return { status: "ok", restarted: false };
         } catch (_) {}
       }
@@ -171,7 +216,7 @@ function createTaskboardSupervisor({ detached }) {
       });
 
       try {
-        await waitUntilReachable(taskboardHealthUrl, 10_000);
+        await waitUntilTaskboardReachable(10_000);
         retryAfter = 0;
         return { status: "ok", restarted: true };
       } catch (error) {
@@ -223,6 +268,7 @@ function launchCodex(appPath, port) {
     executablePath,
     [
       `--user-data-dir=${independentCodexProfilePath}`,
+      "--remote-debugging-address=127.0.0.1",
       `--remote-debugging-port=${port}`,
       `--remote-allow-origins=http://127.0.0.1:${port}`,
     ],
@@ -551,6 +597,54 @@ async function waitForFrame(cdp, expectedUrl, timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   return false;
+}
+
+function findFrameByName(frameTree, frameName) {
+  if (frameTree.frame?.name === frameName) return frameTree.frame;
+  for (const child of frameTree.childFrames ?? []) {
+    const match = findFrameByName(child, frameName);
+    if (match) return match;
+  }
+  return null;
+}
+
+async function verifiedTaskboardDocument() {
+  const challenge = randomBytes(32).toString("hex");
+  const response = await fetch(taskboardPageUrl, {
+    cache: "no-store",
+    headers: {
+      origin: "app://-",
+      "x-codex-taskboard-challenge": challenge,
+    },
+  });
+  if (!response.ok) throw new Error(`Taskboard HTTP ${response.status}`);
+  const proof = response.headers.get("x-codex-taskboard-proof") ?? "";
+  const expectedProof = createHmac("sha256", taskboardInstanceSecret)
+    .update(challenge)
+    .digest("hex");
+  if (proof !== expectedProof) throw new Error("Taskboard service identity check failed");
+  const html = await response.text();
+  const head = "<head>";
+  if (!html.includes(head)) throw new Error("Taskboard document has no head element");
+  return html.replace(head, `${head}<base href=${JSON.stringify(taskboardPageUrl)}>`);
+}
+
+async function loadTaskboardFrameViaCdp(cdp, frameName) {
+  const html = await verifiedTaskboardDocument();
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const { frameTree } = await cdp.send("Page.getFrameTree");
+    const targetFrame = findFrameByName(frameTree, frameName);
+    if (targetFrame) {
+      await cdp.send("Page.setDocumentContent", {
+        frameId: targetFrame.id,
+        html,
+      });
+      return { loaded: true };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Timed out waiting for the isolated Taskboard frame");
 }
 
 async function requestCodexAutomationViaCdp(cdp, executionContextId, method, params) {
@@ -885,23 +979,33 @@ async function prefillTaskComposerViaCdp(cdp, executionContextId, request) {
 
 async function sendHostResponse(cdp, executionContextId, response) {
   await cdp.send("Runtime.evaluate", {
-    expression: `window.__codexTaskboardInjection__?.hostResponse(${JSON.stringify(response)})`,
+    expression: `window.postMessage({
+      type: ${JSON.stringify(hostResponseMessage)},
+      capability: ${JSON.stringify(hostCapability)},
+      response: ${JSON.stringify(response)}
+    }, window.location.origin)`,
     contextId: executionContextId,
     returnByValue: true,
   });
 }
 
-async function installTaskboardHostBinding(cdp, supervisor) {
+function installTaskboardHostBinding(cdp, supervisor, startupToken) {
+  let activeContextId = null;
+  let installInFlight = null;
+
   cdp.on("Runtime.bindingCalled", async (params) => {
     if (params.name !== hostBindingName) return;
+    if (params.executionContextId !== activeContextId) return;
     await handleHostBindingPayload(params, {
+      isAuthorizedContext: (executionContextId) => executionContextId === activeContextId,
       parseAutomationRequest: parseTaskboardAutomationHostRequest,
       ensure: () => supervisor.ensure({ force: true }),
-      runAutomation: (request, executionContextId) => (
+      loadFrame: (request) => loadTaskboardFrameViaCdp(cdp, request.frameName),
+      runAutomation: (request) => (
         (async () => {
           const rpc = (method, body) => requestCodexAutomationViaCdp(
             cdp,
-            executionContextId,
+            undefined,
             method,
             body,
           );
@@ -915,26 +1019,74 @@ async function installTaskboardHostBinding(cdp, supervisor) {
           return result;
         })()
       ),
-      prefill: (request, executionContextId) => (
-        prefillTaskComposerViaCdp(cdp, executionContextId, request)
+      prefill: (request) => (
+        prefillTaskComposerViaCdp(cdp, undefined, request)
       ),
       sendResponse: (executionContextId, response) => (
         sendHostResponse(cdp, executionContextId, response)
       ),
     });
   });
-  await cdp.send("Runtime.addBinding", { name: hostBindingName });
-  await restoreQuotaPolicies(cdp);
-}
 
-async function publishHostHeartbeat(cdp, startupToken) {
-  await cdp.send("Runtime.evaluate", {
-    expression: `(() => {
-      window[${JSON.stringify(hostHeartbeatName)}] = Date.now();
-      window[${JSON.stringify(hostStartupTokenName)}] = ${JSON.stringify(startupToken)};
-    })()`,
-    returnByValue: true,
-  });
+  async function install() {
+    if (installInFlight) return installInFlight;
+    installInFlight = (async () => {
+      const { frameTree } = await cdp.send("Page.getFrameTree");
+      const isolatedWorld = await cdp.send("Page.createIsolatedWorld", {
+        frameId: frameTree.frame.id,
+        worldName: "codex-taskboard-host",
+      });
+      activeContextId = isolatedWorld.executionContextId;
+      await cdp.send("Runtime.addBinding", {
+        name: hostBindingName,
+        executionContextId: activeContextId,
+      });
+      await cdp.send("Runtime.evaluate", {
+        contextId: activeContextId,
+        expression: `(() => {
+          const capability = ${JSON.stringify(hostCapability)};
+          if (globalThis.__codexTaskboardIsolatedBridgeV1 === capability) return;
+          globalThis.__codexTaskboardIsolatedBridgeV1 = capability;
+          window.addEventListener("message", (event) => {
+            const message = event.data;
+            if (
+              event.source !== window
+              || event.origin !== window.location.origin
+              || !message
+              || typeof message !== "object"
+              || message.type !== ${JSON.stringify(hostRequestMessage)}
+              || message.capability !== capability
+            ) return;
+            globalThis[${JSON.stringify(hostBindingName)}](JSON.stringify(message.payload));
+          });
+        })()`,
+        returnByValue: true,
+      });
+      await restoreQuotaPolicies(cdp);
+      return activeContextId;
+    })();
+    try {
+      return await installInFlight;
+    } finally {
+      installInFlight = null;
+    }
+  }
+
+  async function publishHeartbeat() {
+    const executionContextId = await install();
+    await cdp.send("Runtime.evaluate", {
+      contextId: executionContextId,
+      expression: `window.postMessage({
+        type: ${JSON.stringify(hostHeartbeatMessage)},
+        capability: ${JSON.stringify(hostCapability)},
+        at: Date.now(),
+        startupToken: ${JSON.stringify(startupToken)}
+      }, window.location.origin)`,
+      returnByValue: true,
+    });
+  }
+
+  return { install, publishHeartbeat };
 }
 
 async function readInjectionStatus(cdp) {
@@ -946,6 +1098,7 @@ async function readInjectionStatus(cdp) {
       entryMounted: Boolean(document.getElementById("codex-taskboard-entry")),
       pageMounted: Boolean(document.getElementById("codex-taskboard-page")),
       pageVisible: document.getElementById("codex-taskboard-page")?.hidden === false,
+      frameReady: window.__codexTaskboardInjection__?.ready === true,
       frameUrl: document.getElementById("codex-taskboard-frame")?.src || null
     })`,
     returnByValue: true,
@@ -961,7 +1114,7 @@ async function waitForInjectionStatus(cdp, shouldOpen, expectedSourceHash, timeo
     && (
       status.sourceHash !== expectedSourceHash
       || !status.entryMounted
-      || (shouldOpen && (!status.pageVisible || !status.frameUrl))
+      || (shouldOpen && (!status.pageVisible || !status.frameUrl || !status.frameReady))
     )
   ) {
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -1010,12 +1163,16 @@ async function injectTarget(
 ) {
   const cdp = new CdpConnection(target.webSocketDebuggerUrl);
   let retained = false;
+  const hostBridge = keepAlive
+    ? installTaskboardHostBinding(cdp, supervisor, startupToken)
+    : null;
+  cdp.hostBridge = hostBridge;
   await cdp.open();
   try {
     await cdp.send("Page.enable");
     await cdp.send("Page.setBypassCSP", { enabled: true });
     await cdp.send("Runtime.enable");
-    if (keepAlive) await installTaskboardHostBinding(cdp, supervisor);
+    if (keepAlive) await hostBridge.install();
     if (keepAlive && attachExisting) {
       const currentStatus = await readInjectionStatus(cdp);
       const reconciled = await reconcileInjectionRuntime({
@@ -1034,10 +1191,12 @@ async function injectTarget(
           returnByValue: true,
         }),
       });
-      cdp.on("Page.loadEventFired", () => (
-        publishInjectionScriptIdentifier(cdp, reconciled.scriptIdentifier)
-      ));
-      await publishHostHeartbeat(cdp, startupToken);
+      cdp.on("Page.loadEventFired", async () => {
+        await hostBridge.install();
+        await publishInjectionScriptIdentifier(cdp, reconciled.scriptIdentifier);
+        await hostBridge.publishHeartbeat();
+      });
+      await hostBridge.publishHeartbeat();
       const status = await waitForInjectionStatus(
         cdp,
         reconciled.shouldRemainOpen,
@@ -1047,6 +1206,9 @@ async function injectTarget(
       const frameLoaded = status.frameUrl
         ? await waitForFrame(cdp, status.frameUrl, 15_000)
         : false;
+      if (reconciled.shouldRemainOpen && (!status.frameReady || !frameLoaded)) {
+        throw new Error("Taskboard frame did not report ready in the Codex renderer");
+      }
       retained = true;
       return {
         result: { ...status, cspBypassed: true, frameLoaded },
@@ -1054,12 +1216,14 @@ async function injectTarget(
       };
     }
     const scriptIdentifier = await registerInjectionSource(cdp, source);
-    cdp.on("Page.loadEventFired", () => (
-      publishInjectionScriptIdentifier(cdp, scriptIdentifier)
-    ));
+    cdp.on("Page.loadEventFired", async () => {
+      if (keepAlive) await hostBridge.install();
+      await publishInjectionScriptIdentifier(cdp, scriptIdentifier);
+      if (keepAlive) await hostBridge.publishHeartbeat();
+    });
     await evaluateInjectionSource(cdp, source);
     await publishInjectionScriptIdentifier(cdp, scriptIdentifier);
-    if (keepAlive) await publishHostHeartbeat(cdp, startupToken);
+    if (keepAlive) await hostBridge.publishHeartbeat();
     if (shouldOpen) {
       await waitForInjectionStatus(cdp, false, sourceHash, 60_000);
       await cdp.send("Runtime.evaluate", {
@@ -1075,8 +1239,8 @@ async function injectTarget(
     const frameLoaded = status.frameUrl
       ? await waitForFrame(cdp, status.frameUrl, 15_000)
       : false;
-    if (shouldOpen && !frameLoaded) {
-      throw new Error("Taskboard iframe did not finish loading in the Codex renderer");
+    if (shouldOpen && (!status.frameReady || !frameLoaded)) {
+      throw new Error("Taskboard frame did not report ready in the Codex renderer");
     }
     const result = {
       ...status,
@@ -1145,9 +1309,8 @@ async function injectAll(
 async function currentInjectionSource() {
   const userScript = await readFile(injectionPath, "utf8");
   const runtimeSource = `window.__CODEX_TASKBOARD_MANAGED_ORIGIN__ = ${JSON.stringify(taskboardOrigin)};
-if (typeof window.__CODEX_TASKBOARD_URL__ !== "string" || !window.__CODEX_TASKBOARD_URL__.trim()) {
-  window.__CODEX_TASKBOARD_URL__ = ${JSON.stringify(taskboardPageUrl)};
-}
+window.__CODEX_TASKBOARD_HOST_CAPABILITY__ = ${JSON.stringify(hostCapability)};
+window.__CODEX_TASKBOARD_URL__ = ${JSON.stringify(taskboardPageUrl)};
 ${userScript}`;
   const sourceHash = createHash("sha256").update(runtimeSource).digest("hex");
   return {
@@ -1159,6 +1322,7 @@ ${runtimeSource}`,
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  options.startupToken ??= taskboardInstanceToken;
   process.env.CODEX_EXECUTABLE = resolveCodexExecutable({ appPath: options.appPath });
   const cdpVersionUrl = `http://127.0.0.1:${options.port}/json/version`;
 
@@ -1297,7 +1461,7 @@ async function main() {
       if (stopping) break;
       for (const connection of injectedTargets.values()) {
         try {
-          await publishHostHeartbeat(connection, options.startupToken);
+          await connection.hostBridge?.publishHeartbeat();
         } catch (_) {}
       }
       try {

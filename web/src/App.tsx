@@ -37,6 +37,7 @@ import {
   moveTask as moveTaskRequest,
   publishHostRuntime,
   removeTaskRelation,
+  resolveTaskboardUrl,
   restoreTask as restoreTaskRequest,
   setCurrentUserActor,
   uploadAttachment,
@@ -63,6 +64,7 @@ import { TaskContextMenu } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
 import { TaskEditor, type NewTaskEditorDraft } from "./components/TaskEditor";
 import { TaskFilterMenu } from "./components/TaskFilterMenu";
+import { taskboardStorage } from "./storage";
 import { buildIssueUrl, readIssueIdentifier } from "./issueRoute";
 import {
   MAIN_STATUSES,
@@ -236,7 +238,7 @@ const DEFAULT_AUTOMATION_OPTIONS = {
 
 function readIssueActivityKeys(storageKey: string): Record<string, string> {
   try {
-    const value = JSON.parse(window.localStorage.getItem(storageKey) ?? "{}");
+    const value = JSON.parse(taskboardStorage.getItem(storageKey) ?? "{}");
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => (
       typeof entry[0] === "string" && typeof entry[1] === "string"
@@ -247,7 +249,7 @@ function readIssueActivityKeys(storageKey: string): Record<string, string> {
 }
 
 function readProjectBoardView(projectId: string): BoardView {
-  const view = window.localStorage.getItem(`${PROJECT_VIEW_KEY_PREFIX}${projectId}`);
+  const view = taskboardStorage.getItem(`${PROJECT_VIEW_KEY_PREFIX}${projectId}`);
   return view === "dashboard" || view === "list" || view === "gantt" || view === "issues"
     ? view
     : "issues";
@@ -255,7 +257,7 @@ function readProjectBoardView(projectId: string): BoardView {
 
 function readRecentProjectIds(): string[] {
   try {
-    const value = JSON.parse(window.localStorage.getItem(RECENT_PROJECT_IDS_KEY) ?? "[]");
+    const value = JSON.parse(taskboardStorage.getItem(RECENT_PROJECT_IDS_KEY) ?? "[]");
     return Array.isArray(value)
       ? value.filter((projectId): projectId is string => typeof projectId === "string" && projectId.length > 0)
       : [];
@@ -287,14 +289,14 @@ function isTheme(value: unknown): value is Theme {
 function getInitialTheme(): Theme {
   const fromQuery = new URLSearchParams(window.location.search).get("theme");
   if (isTheme(fromQuery)) return fromQuery;
-  const stored = window.localStorage.getItem("taskboard.theme");
+  const stored = taskboardStorage.getItem("taskboard.theme");
   if (isTheme(stored)) return stored;
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function readDeviceWorkspacePaths(): Record<string, string> {
   try {
-    const value = JSON.parse(window.localStorage.getItem(DEVICE_WORKSPACE_PATHS_KEY) ?? "{}");
+    const value = JSON.parse(taskboardStorage.getItem(DEVICE_WORKSPACE_PATHS_KEY) ?? "{}");
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => (
       typeof entry[1] === "string" && entry[1].trim().length > 0
@@ -306,7 +308,7 @@ function readDeviceWorkspacePaths(): Record<string, string> {
 
 function readProjectAutomations(): ProjectAutomations {
   try {
-    const value = JSON.parse(window.localStorage.getItem(PROJECT_AUTOMATIONS_KEY) ?? "{}");
+    const value = JSON.parse(taskboardStorage.getItem(PROJECT_AUTOMATIONS_KEY) ?? "{}");
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     const result: ProjectAutomations = {};
     for (const [projectId, record] of Object.entries(value)) {
@@ -466,7 +468,7 @@ function LocalRealtimeSync({
   setAttachmentsRevision,
 }: LocalRealtimeSyncProps) {
   useEffect(() => {
-    const source = new EventSource("/api/events");
+    const source = new EventSource(resolveTaskboardUrl("/api/events"));
     let refreshTimer: number | undefined;
     let refreshProjectsPending = false;
     let refreshTasksPending = false;
@@ -617,7 +619,7 @@ export function App() {
   const [openingProjectId, setOpeningProjectId] = useState<string | null>(null);
   const [openingThreadTaskId, setOpeningThreadTaskId] = useState<string | null>(null);
   const [projectMenuOpen, setProjectMenuOpen] = useState(
-    () => window.localStorage.getItem(FIRST_USE_COMPLETE_KEY) === null,
+    () => taskboardStorage.getItem(FIRST_USE_COMPLETE_KEY) === null,
   );
   const [projectContextMenu, setProjectContextMenu] = useState<ProjectContextMenuState | null>(null);
   const [projectCreateOpen, setProjectCreateOpen] = useState(false);
@@ -664,7 +666,7 @@ export function App() {
       const next = { ...current };
       if (normalizedPath) next[projectId] = normalizedPath;
       else delete next[projectId];
-      window.localStorage.setItem(DEVICE_WORKSPACE_PATHS_KEY, JSON.stringify(next));
+      taskboardStorage.setItem(DEVICE_WORKSPACE_PATHS_KEY, JSON.stringify(next));
       return next;
     });
   }, []);
@@ -673,7 +675,7 @@ export function App() {
     setRecentProjectIds((current) => {
       if (current[0] === projectId) return current;
       const next = [projectId, ...current.filter((candidate) => candidate !== projectId)];
-      window.localStorage.setItem(RECENT_PROJECT_IDS_KEY, JSON.stringify(next));
+      taskboardStorage.setItem(RECENT_PROJECT_IDS_KEY, JSON.stringify(next));
       return next;
     });
   }, []);
@@ -808,7 +810,7 @@ export function App() {
       if (current[task.id] === task.activityKey) return current;
       const next = { ...current, [task.id]: task.activityKey };
       try {
-        window.localStorage.setItem(issueReadStorageKey, JSON.stringify(next));
+        taskboardStorage.setItem(issueReadStorageKey, JSON.stringify(next));
       } catch {
         // Read state remains valid for this page even when browser persistence is unavailable.
       }
@@ -843,7 +845,7 @@ export function App() {
       if (record) next[projectId] = record;
       else delete next[projectId];
       projectAutomationsRef.current = next;
-      window.localStorage.setItem(PROJECT_AUTOMATIONS_KEY, JSON.stringify(next));
+      taskboardStorage.setItem(PROJECT_AUTOMATIONS_KEY, JSON.stringify(next));
       return next;
     });
   }, []);
@@ -1069,7 +1071,7 @@ export function App() {
     document.documentElement.dataset.theme = theme;
     document.documentElement.dataset.embedded = String(embedded);
     document.documentElement.style.colorScheme = theme;
-    if (!embedded) window.localStorage.setItem("taskboard.theme", theme);
+    if (!embedded) taskboardStorage.setItem("taskboard.theme", theme);
   }, [embedded, theme]);
 
   useEffect(() => {
@@ -1093,8 +1095,8 @@ export function App() {
   }, [tasks]);
 
   useEffect(() => {
-    if (window.localStorage.getItem(FIRST_USE_COMPLETE_KEY) === null) {
-      window.localStorage.setItem(FIRST_USE_COMPLETE_KEY, "true");
+    if (taskboardStorage.getItem(FIRST_USE_COMPLETE_KEY) === null) {
+      taskboardStorage.setItem(FIRST_USE_COMPLETE_KEY, "true");
     }
   }, []);
 
@@ -1256,7 +1258,7 @@ export function App() {
         const next = { ...current, ...workspaces };
         delete next[GLOBAL_PROJECT_ID];
         if (JSON.stringify(next) === JSON.stringify(current)) return current;
-        window.localStorage.setItem(DEVICE_WORKSPACE_PATHS_KEY, JSON.stringify(next));
+        taskboardStorage.setItem(DEVICE_WORKSPACE_PATHS_KEY, JSON.stringify(next));
         return next;
       });
       setProjects(nextProjects);
@@ -1600,7 +1602,7 @@ export function App() {
     setGanttViewMenuOpen(false);
     setBoardView(view);
     if (selectedProjectId) {
-      window.localStorage.setItem(`${PROJECT_VIEW_KEY_PREFIX}${selectedProjectId}`, view);
+      taskboardStorage.setItem(`${PROJECT_VIEW_KEY_PREFIX}${selectedProjectId}`, view);
     }
   }
 
@@ -2073,7 +2075,7 @@ export function App() {
       setProjects((current) => current.filter((candidate) => candidate.id !== project.id));
       setRecentProjectIds((current) => {
         const next = current.filter((candidate) => candidate !== project.id);
-        window.localStorage.setItem(RECENT_PROJECT_IDS_KEY, JSON.stringify(next));
+        taskboardStorage.setItem(RECENT_PROJECT_IDS_KEY, JSON.stringify(next));
         return next;
       });
       setPendingProjectDelete(null);
