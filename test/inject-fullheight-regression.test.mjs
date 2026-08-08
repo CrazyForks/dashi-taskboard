@@ -155,7 +155,7 @@ test("Taskboard stays visible when closing the browser panel makes the conversat
     response.setHeader("connection", "close");
     if (request.url?.startsWith("/taskboard")) {
       response.setHeader("content-type", "text/html; charset=utf-8");
-      response.end(`<!doctype html><script>parent.postMessage({ type: "taskboard:ready" }, location.origin)</script>`);
+      response.end(`<!doctype html><html><head></head><body><script>parent.postMessage({ type: "taskboard:ready" }, "*")</script></body></html>`);
       return;
     }
     const origin = `http://127.0.0.1:${server.address().port}`;

@@ -61,6 +61,7 @@
   let status = null;
   let frameOrigin = "";
   let taskboardOrigin = "";
+  let frameTaskboardUrl = "";
   let frameBlobUrl = "";
   let frameReady = false;
   let frameReadyWaiters = new Set();
@@ -1018,6 +1019,7 @@
     frame?.remove();
     if (frameBlobUrl) URL.revokeObjectURL(frameBlobUrl);
     frame = null;
+    frameTaskboardUrl = "";
     frameBlobUrl = "";
     frameReady = false;
     if (dragRegion) dragRegion.hidden = true;
@@ -1029,6 +1031,7 @@
       taskboardUrl.searchParams.set(FRAME_REFRESH_PARAM, Date.now().toString(36));
     }
     taskboardOrigin = taskboardUrl.origin;
+    frameTaskboardUrl = taskboardUrl.href;
     frameOrigin = window.location.origin;
     const bootstrapHtml = `<!doctype html>
 <html><head><meta charset="utf-8"></head><body><script>
@@ -1136,9 +1139,9 @@
   }
 
   function frameMatchesTaskboardUrl(taskboardUrl) {
-    if (!frame) return false;
+    if (!frame || !frameTaskboardUrl) return false;
     try {
-      const loadedUrl = new URL(frame.getAttribute("src") || frame.src);
+      const loadedUrl = new URL(frameTaskboardUrl);
       loadedUrl.searchParams.delete(FRAME_REFRESH_PARAM);
       const expectedUrl = new URL(taskboardUrl.href);
       expectedUrl.searchParams.delete(FRAME_REFRESH_PARAM);
@@ -1386,6 +1389,7 @@
     status = null;
     frameOrigin = "";
     taskboardOrigin = "";
+    frameTaskboardUrl = "";
     if (frameBlobUrl) URL.revokeObjectURL(frameBlobUrl);
     frameBlobUrl = "";
     if (window[SENTINEL_KEY] === api) delete window[SENTINEL_KEY];

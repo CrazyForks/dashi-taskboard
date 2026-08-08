@@ -24,8 +24,11 @@ test("injection is an idempotent IIFE guarded by its current source hash", () =>
 test("embedded page uses the local taskboard URL and supports a runtime override", () => {
   assert.match(source, /http:\/\/127\.0\.0\.1:47823\/\?host=codex/);
   assert.match(source, /window\.__CODEX_TASKBOARD_URL__/);
-  assert.match(source, /nextFrame\.src = taskboardUrl\.href/);
-  assert.match(source, /frameOrigin = taskboardUrl\.origin/);
+  assert.match(source, /fetch\(sourceUrl, \{ cache: "no-store" \}\)/);
+  assert.match(source, /new Blob\(\[bootstrapHtml\], \{ type: "text\/html" \}\)/);
+  assert.match(source, /nextFrame\.src = frameBlobUrl/);
+  assert.match(source, /taskboardOrigin = taskboardUrl\.origin/);
+  assert.match(source, /frameOrigin = window\.location\.origin/);
 });
 
 test("entry clones the native Plugins row and the page covers the complete Codex workspace", () => {
@@ -217,7 +220,7 @@ test("only a loopback Taskboard iframe can request native automation", () => {
   assert.match(source, /hostname === "127\.0\.0\.1" \|\| hostname === "localhost"/);
   assert.match(
     source,
-    /if \(!isLocalTaskboardOrigin\(frameOrigin\)\) \{\s*postToFrame\(\{\s*type: "taskboard:automation-response"/,
+    /if \(!isLocalTaskboardOrigin\(taskboardOrigin\)\) \{\s*postToFrame\(\{\s*type: "taskboard:automation-response"/,
   );
 });
 
