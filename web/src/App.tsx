@@ -699,7 +699,7 @@ export function App() {
     if (!embedded || window.parent === window) {
       return { unavailableReason: "仅可在 Codex App 中使用" };
     }
-    if (!isLocalTaskboardOrigin(window.location.origin)) {
+    if (!isLocalTaskboardOrigin(new URL(document.baseURI).origin)) {
       return { unavailableReason: "仅本地任务面板可用" };
     }
     if (!selectedProject) return { unavailableReason: "请先选择项目" };
