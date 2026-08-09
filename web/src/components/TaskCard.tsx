@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { attachmentContentUrl } from "../api";
+import { attachmentContentUrl, resolvePersistedAttachmentUrl } from "../api";
 import {
   TASK_PRIORITIES,
   type ActorIdentity,
@@ -76,9 +76,10 @@ function firstTaskImage(task: Task) {
   const markdownImage = task.description.match(
     /!\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+["'][^)]*["'])?\)/,
   );
-  return markdownImage?.[1]
+  const source = markdownImage?.[1]
     ?? markdownImage?.[2]
     ?? (task.previewImage ? attachmentContentUrl(task.previewImage) : null);
+  return source ? resolvePersistedAttachmentUrl(source) : null;
 }
 
 function TaskCardMedia({ src }: { src: string }) {

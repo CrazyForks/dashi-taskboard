@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import ReactMarkdown from "react-markdown";
+import { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { taskboardStorage } from "../storage";
 import {
   ApiError,
-  attachmentContentUrl,
+  attachmentDownloadUrl,
   createComment,
   deleteAttachment,
   deleteComment,
   listAttachments,
   listComments,
   listTaskActivities,
+  markdownIncludesAttachment,
+  resolvePersistedAttachmentUrl,
   uploadAttachment,
   uploadCommentAttachment,
   updateComment,
@@ -252,6 +256,7 @@ function DescriptionDocument({ value }: { value: string }) {
     <div className="issue-description-document">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={(url) => defaultUrlTransform(resolvePersistedAttachmentUrl(url))}
         components={{
           a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
         }}
@@ -324,7 +329,7 @@ export function TaskDetail({
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [commentSegments, setCommentSegments] = useState<InlineMediaSegment[]>(
     () => createInlineMediaSegments(
-      window.localStorage.getItem(`taskboard.comment-draft.${task.id}`) ?? "",
+      taskboardStorage.getItem(`taskboard.comment-draft.${task.id}`) ?? "",
     ),
   );
   const [pendingCommentFiles, setPendingCommentFiles] = useState<File[]>([]);
@@ -408,8 +413,8 @@ export function TaskDetail({
   useEffect(() => {
     const key = `taskboard.comment-draft.${task.id}`;
     const text = inlineMediaText(commentSegments);
-    if (text) window.localStorage.setItem(key, text);
-    else window.localStorage.removeItem(key);
+    if (text) taskboardStorage.setItem(key, text);
+    else taskboardStorage.removeItem(key);
   }, [commentSegments, task.id]);
 
   useEffect(() => {
@@ -696,7 +701,7 @@ export function TaskDetail({
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index
     ));
   const visibleTaskAttachments = attachments.filter(
-    (attachment) => !description.includes(attachmentContentUrl(attachment)),
+    (attachment) => !markdownIncludesAttachment(description, attachment),
   );
   const activityTimeline = [
     ...taskActivities.flatMap((activity) => activity.changes.map((change, index) => ({
@@ -848,10 +853,9 @@ export function TaskDetail({
                     <li key={attachment.id}>
                       <a
                         className="attachment-link"
-                        href={attachmentContentUrl(attachment)}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={`打开 ${attachment.filename}`}
+                        href={attachmentDownloadUrl(attachment)}
+                        download={attachment.filename}
+                        title={`下载 ${attachment.filename}`}
                       >
                         <span className="attachment-file-icon" aria-hidden="true">
                           <LinearIcon name="file" />
@@ -863,7 +867,7 @@ export function TaskDetail({
                       </a>
                       <div className="attachment-actions">
                         <a
-                          href={attachmentContentUrl(attachment)}
+                          href={attachmentDownloadUrl(attachment)}
                           download={attachment.filename}
                           aria-label={`下载 ${attachment.filename}`}
                           title="下载附件"
@@ -1046,18 +1050,17 @@ export function TaskDetail({
                         comment.body && <div className="comment-body"><DescriptionDocument value={comment.body} /></div>
                       )}
                       {comment.attachments.some(
-                        (attachment) => !comment.body.includes(attachmentContentUrl(attachment)),
+                        (attachment) => !markdownIncludesAttachment(comment.body, attachment),
                       ) && (
                         <ul className="comment-attachment-list" aria-label="评论附件">
                           {comment.attachments
-                            .filter((attachment) => !comment.body.includes(attachmentContentUrl(attachment)))
+                            .filter((attachment) => !markdownIncludesAttachment(comment.body, attachment))
                             .map((attachment) => (
                               <li key={attachment.id}>
                                 <a
-                                  href={attachmentContentUrl(attachment)}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  title={`打开 ${attachment.filename}`}
+                                  href={attachmentDownloadUrl(attachment)}
+                                  download={attachment.filename}
+                                  title={`下载 ${attachment.filename}`}
                                 >
                                   <span className="attachment-file-icon" aria-hidden="true">
                                     <LinearIcon name="file" />

@@ -57,6 +57,10 @@ export class ApiError extends Error {
   }
 }
 
+export function resolveTaskboardUrl(path: string): string {
+  return new URL(path.replace(/^\//, ""), document.baseURI).href;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
@@ -71,7 +75,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   let response: Response;
   try {
-    response = await fetch(path, { ...init, headers });
+    response = await fetch(resolveTaskboardUrl(path), { ...init, headers });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") throw error;
     throw new ApiError(0, {
@@ -249,7 +253,9 @@ export function subscribeAiChatThread(
   onHint: (type: "ai.event" | "ai.run") => void,
   onError?: () => void,
 ): () => void {
-  const source = new EventSource(`/api/local/ai/threads/${encodeURIComponent(threadId)}/events`);
+  const source = new EventSource(
+    resolveTaskboardUrl(`/api/local/ai/threads/${encodeURIComponent(threadId)}/events`),
+  );
   source.addEventListener("ai.event", () => onHint("ai.event"));
   source.addEventListener("ai.run", () => onHint("ai.run"));
   if (onError) source.addEventListener("error", onError);
@@ -521,5 +527,29 @@ export async function deleteAttachment(attachment: Attachment): Promise<void> {
 }
 
 export function attachmentContentUrl(attachment: Attachment): string {
-  return `/api/attachments/${encodeURIComponent(attachment.id)}/content`;
+  return `api/attachments/${encodeURIComponent(attachment.id)}/content`;
+}
+
+export function attachmentDownloadUrl(attachment: Attachment): string {
+  return `api/attachments/${encodeURIComponent(attachment.id)}/download`;
+}
+
+export function resolvePersistedAttachmentUrl(value: string): string {
+  if (/^\/?api\/attachments\/[^/?#]+\/content$/.test(value)) {
+    return resolveTaskboardUrl(value);
+  }
+  try {
+    const url = new URL(value);
+    const match = url.pathname.match(/\/api\/attachments\/([^/]+)\/content$/);
+    if (url.protocol === "http:" && url.hostname === "127.0.0.1" && match) {
+      return resolveTaskboardUrl(`/api/attachments/${match[1]}/content`);
+    }
+  } catch {
+    return value;
+  }
+  return value;
+}
+
+export function markdownIncludesAttachment(markdown: string, attachment: Attachment): boolean {
+  return markdown.includes(`api/attachments/${encodeURIComponent(attachment.id)}/content`);
 }

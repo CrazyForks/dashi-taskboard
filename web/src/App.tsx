@@ -37,6 +37,7 @@ import {
   moveTask as moveTaskRequest,
   publishHostRuntime,
   removeTaskRelation,
+  resolveTaskboardUrl,
   restoreTask as restoreTaskRequest,
   setCurrentUserActor,
   uploadAttachment,
@@ -63,6 +64,12 @@ import { TaskContextMenu } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
 import { TaskEditor, type NewTaskEditorDraft } from "./components/TaskEditor";
 import { TaskFilterMenu } from "./components/TaskFilterMenu";
+import { taskboardStorage } from "./storage";
+import {
+  installEmbeddedExternalLinkHandler,
+  postEmbeddedHostMessage,
+  setEmbeddedFrameChallenge,
+} from "./embeddedHost.mjs";
 import { buildIssueUrl, readIssueIdentifier } from "./issueRoute";
 import {
   MAIN_STATUSES,
@@ -236,7 +243,7 @@ const DEFAULT_AUTOMATION_OPTIONS = {
 
 function readIssueActivityKeys(storageKey: string): Record<string, string> {
   try {
-    const value = JSON.parse(window.localStorage.getItem(storageKey) ?? "{}");
+    const value = JSON.parse(taskboardStorage.getItem(storageKey) ?? "{}");
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => (
       typeof entry[0] === "string" && typeof entry[1] === "string"
@@ -247,7 +254,7 @@ function readIssueActivityKeys(storageKey: string): Record<string, string> {
 }
 
 function readProjectBoardView(projectId: string): BoardView {
-  const view = window.localStorage.getItem(`${PROJECT_VIEW_KEY_PREFIX}${projectId}`);
+  const view = taskboardStorage.getItem(`${PROJECT_VIEW_KEY_PREFIX}${projectId}`);
   return view === "dashboard" || view === "list" || view === "gantt" || view === "issues"
     ? view
     : "issues";
@@ -255,7 +262,7 @@ function readProjectBoardView(projectId: string): BoardView {
 
 function readRecentProjectIds(): string[] {
   try {
-    const value = JSON.parse(window.localStorage.getItem(RECENT_PROJECT_IDS_KEY) ?? "[]");
+    const value = JSON.parse(taskboardStorage.getItem(RECENT_PROJECT_IDS_KEY) ?? "[]");
     return Array.isArray(value)
       ? value.filter((projectId): projectId is string => typeof projectId === "string" && projectId.length > 0)
       : [];
@@ -287,14 +294,14 @@ function isTheme(value: unknown): value is Theme {
 function getInitialTheme(): Theme {
   const fromQuery = new URLSearchParams(window.location.search).get("theme");
   if (isTheme(fromQuery)) return fromQuery;
-  const stored = window.localStorage.getItem("taskboard.theme");
+  const stored = taskboardStorage.getItem("taskboard.theme");
   if (isTheme(stored)) return stored;
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function readDeviceWorkspacePaths(): Record<string, string> {
   try {
-    const value = JSON.parse(window.localStorage.getItem(DEVICE_WORKSPACE_PATHS_KEY) ?? "{}");
+    const value = JSON.parse(taskboardStorage.getItem(DEVICE_WORKSPACE_PATHS_KEY) ?? "{}");
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => (
       typeof entry[1] === "string" && entry[1].trim().length > 0
@@ -306,7 +313,7 @@ function readDeviceWorkspacePaths(): Record<string, string> {
 
 function readProjectAutomations(): ProjectAutomations {
   try {
-    const value = JSON.parse(window.localStorage.getItem(PROJECT_AUTOMATIONS_KEY) ?? "{}");
+    const value = JSON.parse(taskboardStorage.getItem(PROJECT_AUTOMATIONS_KEY) ?? "{}");
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     const result: ProjectAutomations = {};
     for (const [projectId, record] of Object.entries(value)) {
@@ -466,7 +473,7 @@ function LocalRealtimeSync({
   setAttachmentsRevision,
 }: LocalRealtimeSyncProps) {
   useEffect(() => {
-    const source = new EventSource("/api/events");
+    const source = new EventSource(resolveTaskboardUrl("/api/events"));
     let refreshTimer: number | undefined;
     let refreshProjectsPending = false;
     let refreshTasksPending = false;
@@ -555,12 +562,13 @@ function LocalRealtimeSync({
 }
 
 export function App() {
-  const query = useMemo(() => new URLSearchParams(window.location.search), []);
+  const query = useMemo(() => new URL(document.baseURI).searchParams, []);
   const host = query.get("host");
   const embedded = host === "codex" || host === "workbuddy";
   const undoShortcut = navigator.userAgent.includes("Macintosh") ? "⌘Z" : "Ctrl+Z";
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [hostContext, setHostContext] = useState<HostContext | null>(null);
+  const [embeddedFrameChallenge, setEmbeddedFrameChallengeState] = useState("");
   const [developmentScan, setDevelopmentScan] = useState<DevelopmentScan>({ workspacePath: null, contexts: [] });
   const [developmentScanLoading, setDevelopmentScanLoading] = useState(false);
   const [manageTaskboardSkillPath, setManageTaskboardSkillPath] = useState("");
@@ -617,7 +625,7 @@ export function App() {
   const [openingProjectId, setOpeningProjectId] = useState<string | null>(null);
   const [openingThreadTaskId, setOpeningThreadTaskId] = useState<string | null>(null);
   const [projectMenuOpen, setProjectMenuOpen] = useState(
-    () => window.localStorage.getItem(FIRST_USE_COMPLETE_KEY) === null,
+    () => taskboardStorage.getItem(FIRST_USE_COMPLETE_KEY) === null,
   );
   const [projectContextMenu, setProjectContextMenu] = useState<ProjectContextMenuState | null>(null);
   const [projectCreateOpen, setProjectCreateOpen] = useState(false);
@@ -664,7 +672,7 @@ export function App() {
       const next = { ...current };
       if (normalizedPath) next[projectId] = normalizedPath;
       else delete next[projectId];
-      window.localStorage.setItem(DEVICE_WORKSPACE_PATHS_KEY, JSON.stringify(next));
+      taskboardStorage.setItem(DEVICE_WORKSPACE_PATHS_KEY, JSON.stringify(next));
       return next;
     });
   }, []);
@@ -673,7 +681,7 @@ export function App() {
     setRecentProjectIds((current) => {
       if (current[0] === projectId) return current;
       const next = [projectId, ...current.filter((candidate) => candidate !== projectId)];
-      window.localStorage.setItem(RECENT_PROJECT_IDS_KEY, JSON.stringify(next));
+      taskboardStorage.setItem(RECENT_PROJECT_IDS_KEY, JSON.stringify(next));
       return next;
     });
   }, []);
@@ -691,7 +699,7 @@ export function App() {
     if (!embedded || window.parent === window) {
       return { unavailableReason: "仅可在 Codex App 中使用" };
     }
-    if (!isLocalTaskboardOrigin(window.location.origin)) {
+    if (!isLocalTaskboardOrigin(new URL(document.baseURI).origin)) {
       return { unavailableReason: "仅本地任务面板可用" };
     }
     if (!selectedProject) return { unavailableReason: "请先选择项目" };
@@ -808,7 +816,7 @@ export function App() {
       if (current[task.id] === task.activityKey) return current;
       const next = { ...current, [task.id]: task.activityKey };
       try {
-        window.localStorage.setItem(issueReadStorageKey, JSON.stringify(next));
+        taskboardStorage.setItem(issueReadStorageKey, JSON.stringify(next));
       } catch {
         // Read state remains valid for this page even when browser persistence is unavailable.
       }
@@ -843,7 +851,7 @@ export function App() {
       if (record) next[projectId] = record;
       else delete next[projectId];
       projectAutomationsRef.current = next;
-      window.localStorage.setItem(PROJECT_AUTOMATIONS_KEY, JSON.stringify(next));
+      taskboardStorage.setItem(PROJECT_AUTOMATIONS_KEY, JSON.stringify(next));
       return next;
     });
   }, []);
@@ -873,7 +881,7 @@ export function App() {
       }, 10_000);
       pendingAutomationRequestsRef.current.set(requestId, { resolve, reject, timeoutId });
     });
-    window.parent.postMessage({
+    postEmbeddedHostMessage({
       type: "taskboard:automation-request",
       payload: {
         requestId,
@@ -890,7 +898,7 @@ export function App() {
         model: options.model,
         reasoningEffort: options.reasoningEffort,
       },
-    }, "*");
+    });
     return response;
   }, [
     automationProjectContext,
@@ -1069,7 +1077,7 @@ export function App() {
     document.documentElement.dataset.theme = theme;
     document.documentElement.dataset.embedded = String(embedded);
     document.documentElement.style.colorScheme = theme;
-    if (!embedded) window.localStorage.setItem("taskboard.theme", theme);
+    if (!embedded) taskboardStorage.setItem("taskboard.theme", theme);
   }, [embedded, theme]);
 
   useEffect(() => {
@@ -1093,8 +1101,8 @@ export function App() {
   }, [tasks]);
 
   useEffect(() => {
-    if (window.localStorage.getItem(FIRST_USE_COMPLETE_KEY) === null) {
-      window.localStorage.setItem(FIRST_USE_COMPLETE_KEY, "true");
+    if (taskboardStorage.getItem(FIRST_USE_COMPLETE_KEY) === null) {
+      taskboardStorage.setItem(FIRST_USE_COMPLETE_KEY, "true");
     }
   }, []);
 
@@ -1139,10 +1147,26 @@ export function App() {
 
   useEffect(() => {
     if (!embedded || window.parent === window) return;
+    let acknowledgedFrameChallenge = "";
 
     function receiveHostMessage(event: MessageEvent) {
       if (event.source !== window.parent || !event.data || typeof event.data !== "object") return;
       const message = event.data as { type?: string; payload?: unknown; theme?: unknown };
+
+      if (message.type === "taskboard:frame-challenge") {
+        const challenge = typeof message.payload === "object"
+          && message.payload
+          && "challenge" in message.payload
+          && typeof message.payload.challenge === "string"
+          ? message.payload.challenge
+          : "";
+        if (!challenge || challenge === acknowledgedFrameChallenge) return;
+        acknowledgedFrameChallenge = challenge;
+        setEmbeddedFrameChallenge(challenge);
+        setEmbeddedFrameChallengeState(challenge);
+        postEmbeddedHostMessage({ type: "taskboard:ready" });
+        return;
+      }
 
       if (message.type === "taskboard:automation-response" && message.payload) {
         const payload = message.payload as Partial<AutomationHostResponse>;
@@ -1183,10 +1207,13 @@ export function App() {
       if (host === "codex") void publishHostRuntime(payload);
     }
 
+    const removeExternalLinkHandler = installEmbeddedExternalLinkHandler();
     window.addEventListener("message", receiveHostMessage);
-    window.parent.postMessage({ type: "taskboard:ready" }, "*");
+    postEmbeddedHostMessage({ type: "taskboard:frame-awaiting-challenge" });
     return () => {
       window.removeEventListener("message", receiveHostMessage);
+      setEmbeddedFrameChallenge("");
+      removeExternalLinkHandler();
       for (const pending of pendingAutomationRequestsRef.current.values()) {
         window.clearTimeout(pending.timeoutId);
       }
@@ -1216,10 +1243,10 @@ export function App() {
     const region = dragRegionRef.current;
     const publish = () => {
       const rect = region.getBoundingClientRect();
-      window.parent.postMessage({
+      postEmbeddedHostMessage({
         type: "taskboard:drag-region",
         payload: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-      }, "*");
+      });
     };
     const observer = new ResizeObserver(publish);
     observer.observe(region);
@@ -1228,9 +1255,9 @@ export function App() {
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", publish);
-      window.parent.postMessage({ type: "taskboard:drag-region", payload: null }, "*");
+      postEmbeddedHostMessage({ type: "taskboard:drag-region", payload: null });
     };
-  }, [detailTaskId, embedded, selectedProjectId]);
+  }, [detailTaskId, embedded, embeddedFrameChallenge, selectedProjectId]);
 
   const loadProjectList = useCallback(async (signal?: AbortSignal) => {
     setLoadError(null);
@@ -1256,7 +1283,7 @@ export function App() {
         const next = { ...current, ...workspaces };
         delete next[GLOBAL_PROJECT_ID];
         if (JSON.stringify(next) === JSON.stringify(current)) return current;
-        window.localStorage.setItem(DEVICE_WORKSPACE_PATHS_KEY, JSON.stringify(next));
+        taskboardStorage.setItem(DEVICE_WORKSPACE_PATHS_KEY, JSON.stringify(next));
         return next;
       });
       setProjects(nextProjects);
@@ -1600,7 +1627,7 @@ export function App() {
     setGanttViewMenuOpen(false);
     setBoardView(view);
     if (selectedProjectId) {
-      window.localStorage.setItem(`${PROJECT_VIEW_KEY_PREFIX}${selectedProjectId}`, view);
+      taskboardStorage.setItem(`${PROJECT_VIEW_KEY_PREFIX}${selectedProjectId}`, view);
     }
   }
 
@@ -1906,7 +1933,7 @@ export function App() {
 
   function openThread(threadId: string) {
     if (embedded && window.parent !== window) {
-      window.parent.postMessage({ type: "taskboard:open-thread", payload: { threadId } }, "*");
+      postEmbeddedHostMessage({ type: "taskboard:open-thread", payload: { threadId } });
       return;
     }
 
@@ -1926,7 +1953,7 @@ export function App() {
 
   function expandCodexSidebar() {
     if (!embedded || window.parent === window) return;
-    window.parent.postMessage({ type: "taskboard:expand-sidebar" }, "*");
+    postEmbeddedHostMessage({ type: "taskboard:expand-sidebar" });
   }
 
   function openTaskInThread(task: Task) {
@@ -1950,7 +1977,7 @@ export function App() {
     const codexProject = hostContext?.projects?.find((project) => project.id === selectedProject?.id);
     setOpeningThreadTaskId(task.id);
     setActionError(null);
-    window.parent.postMessage({
+    postEmbeddedHostMessage({
       type: "taskboard:create-thread",
       payload: {
         taskId: task.id,
@@ -1963,7 +1990,7 @@ export function App() {
         workspacePath,
         workspaceLabel: worktreePath ? workspaceName(worktreePath) : undefined,
       },
-    }, "*");
+    });
   }
 
   function changeProject(projectId: string) {
@@ -2073,7 +2100,7 @@ export function App() {
       setProjects((current) => current.filter((candidate) => candidate.id !== project.id));
       setRecentProjectIds((current) => {
         const next = current.filter((candidate) => candidate !== project.id);
-        window.localStorage.setItem(RECENT_PROJECT_IDS_KEY, JSON.stringify(next));
+        taskboardStorage.setItem(RECENT_PROJECT_IDS_KEY, JSON.stringify(next));
         return next;
       });
       setPendingProjectDelete(null);

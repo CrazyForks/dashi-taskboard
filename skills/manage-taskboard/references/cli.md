@@ -144,7 +144,7 @@ Each comment JSON object independently records the most recent conversation that
 Issue descriptions and comments may contain inline images at exact positions in their Markdown:
 
 ```markdown
-![alt text](/api/attachments/ATTACHMENT_ID/content)
+![alt text](api/attachments/ATTACHMENT_ID/content)
 ```
 
 Download an inline image to an explicit local path before inspecting it:

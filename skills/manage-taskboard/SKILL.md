@@ -24,4 +24,4 @@ Open only the relevant section of [references/cli.md](references/cli.md) when co
 - Add only relations that the work requires. Use parent for contained work, blocks or blocked_by for dependencies, and related for close association.
 - Let `taskctl` read `CODEX_THREAD_ID` for writes. Outside Codex, pass the exact conversation ID with `--thread-id`.
 - Use the latest returned `version` with `--if-version` for concurrent updates. On conflict, read the issue again and reconcile before retrying.
-- Download and inspect an inline `![alt](/api/attachments/<id>/content)` image only when it is needed to understand the requirement.
+- Download and inspect an inline `![alt](api/attachments/<id>/content)` image only when it is needed to understand the requirement.

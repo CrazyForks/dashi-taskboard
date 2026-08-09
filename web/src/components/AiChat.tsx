@@ -14,6 +14,7 @@ import {
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { taskboardStorage } from "../storage";
 import {
   createAiChatThread,
   deleteAiChatThread,
@@ -166,7 +167,7 @@ function clampPanelGeometry(geometry: PanelGeometry): PanelGeometry {
 }
 
 function loadPanelGeometry(): PanelGeometry {
-  const stored = window.localStorage.getItem(PANEL_GEOMETRY_KEY);
+  const stored = taskboardStorage.getItem(PANEL_GEOMETRY_KEY);
   if (!stored) return clampPanelGeometry(PANEL_DEFAULT_GEOMETRY);
   try {
     const geometry = JSON.parse(stored) as PanelGeometry;
@@ -968,7 +969,7 @@ export function AiChat({
   const [menu, setMenu] = useState<MenuName>(null);
   const [threads, setThreads] = useState<AiChatThread[]>([]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(
-    () => window.localStorage.getItem(LAST_THREAD_KEY),
+    () => taskboardStorage.getItem(LAST_THREAD_KEY),
   );
   const [snapshot, setSnapshot] = useState<AiChatThreadSnapshot | null>(null);
   const [draftOrigin, setDraftOrigin] = useState<DraftThreadOrigin | null>(null);
@@ -1020,8 +1021,8 @@ export function AiChat({
 
   useEffect(() => {
     selectedThreadRef.current = selectedThreadId;
-    if (selectedThreadId) window.localStorage.setItem(LAST_THREAD_KEY, selectedThreadId);
-    else window.localStorage.removeItem(LAST_THREAD_KEY);
+    if (selectedThreadId) taskboardStorage.setItem(LAST_THREAD_KEY, selectedThreadId);
+    else taskboardStorage.removeItem(LAST_THREAD_KEY);
   }, [selectedThreadId]);
 
   useEffect(() => {
@@ -1040,7 +1041,7 @@ export function AiChat({
         session.captureTarget.releasePointerCapture(session.pointerId);
       }
       if (window.innerWidth > 719) {
-        window.localStorage.setItem(
+        taskboardStorage.setItem(
           PANEL_GEOMETRY_KEY,
           JSON.stringify(session.geometry),
         );

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHmac } from "node:crypto";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -10,6 +11,8 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
+const instanceToken = "7a6f8d37-78ce-46c9-87a8-08e10db88da2";
+const instanceSecret = "2e587946-96d6-47b5-930a-1ba70214fa88";
 const sourceRef = process.env.TASKBOARD_INJECTION_SOURCE_REF;
 const source = sourceRef
   ? (await execFileAsync(
@@ -18,6 +21,11 @@ const source = sourceRef
       { cwd: projectRoot, maxBuffer: 2 * 1024 * 1024 },
     )).stdout
   : await readFile(new URL("../inject/codex-taskboard.user.js", import.meta.url), "utf8");
+const embeddedHostSource = await readFile(
+  new URL("../web/src/embeddedHost.mjs", import.meta.url),
+  "utf8",
+);
+const embeddedHostDataUrl = `data:text/javascript;base64,${Buffer.from(embeddedHostSource).toString("base64")}`;
 
 async function chromeExecutable() {
   const candidates = [
@@ -87,9 +95,18 @@ function fixtureHtml(origin) {
     <output id="result"></output>
     <script>
       window.__CODEX_TASKBOARD_URL__ = ${JSON.stringify(`${origin}/taskboard?host=codex`)};
+      window.__CODEX_TASKBOARD_INSTANCE_TOKEN__ = ${JSON.stringify(instanceToken)};
+      window.__CODEX_TASKBOARD_INSTANCE_SECRET__ = ${JSON.stringify(instanceSecret)};
+      window.__CODEX_TASKBOARD_HOST_CAPABILITY__ = "fullheight-host-capability";
       window.__CODEX_TASKBOARD_SOURCE_HASH__ = "fullheight-regression";
       window.__browserPanelClosed = false;
       window.__injectionError = null;
+      window.__frameMessages = [];
+      window.__externalOpenUrl = null;
+      window.__frameVisibleBeforeNavigation = false;
+      window.__statusHiddenBeforeNavigation = false;
+      window.__hostileNavigationLoaded = false;
+      window.__forgedThreadOpened = false;
       window.addEventListener("error", (event) => {
         window.__injectionError = event.error?.stack || event.message;
       });
@@ -97,6 +114,54 @@ function fixtureHtml(origin) {
         window.__injectionError = event.reason?.stack || String(event.reason);
       });
       window.addEventListener("message", (event) => {
+        if (typeof event.data?.type === "string" && event.data.type.startsWith("taskboard:")) {
+          window.__frameMessages.push({ type: event.data.type, origin: event.origin });
+        }
+        if (
+          event.source === window
+          && event.data?.type === "__codexTaskboardHostRequestV1"
+          && event.data.capability === "fullheight-host-capability"
+        ) {
+          const request = event.data.payload;
+          if (request.action === "load-frame") {
+            const frame = document.querySelector('iframe[name="' + request.frameName + '"]');
+            const moduleUrl = ${JSON.stringify(embeddedHostDataUrl)};
+            frame.srcdoc = '<a id="external-link" href="https://example.com/review" target="_blank">Review</a>'
+              + '<script type="module">import * as host from ' + JSON.stringify(moduleUrl) + ';'
+              + 'globalThis.__CODEX_TASKBOARD_FRAME_CAPABILITY__='
+              + JSON.stringify(request.frameCapability)
+              + ';host.installEmbeddedExternalLinkHandler();'
+              + 'let activated=false,acknowledgedChallenge="";window.addEventListener("message",function(event){'
+              + 'if(event.data?.type!=="taskboard:frame-challenge")return;'
+              + 'const challenge=event.data.payload?.challenge;if(!challenge||challenge===acknowledgedChallenge)return;'
+              + 'acknowledgedChallenge=challenge;host.setEmbeddedFrameChallenge(challenge);'
+              + 'host.postEmbeddedHostMessage({type:"taskboard:ready"});'
+              + 'if(activated)return;activated=true;'
+              + 'parent.postMessage({type:"taskboard:ready"},"*");'
+              + 'parent.postMessage({type:"taskboard:open-thread",payload:{threadId:"forged"}},"*");'
+              + 'document.getElementById("external-link").click();'
+              + '});host.postEmbeddedHostMessage({type:"taskboard:frame-awaiting-challenge"});<\\/script>';
+          }
+          if (request.action === "open-external") {
+            window.__externalOpenUrl = request.url;
+            const frame = document.getElementById("codex-taskboard-frame");
+            window.__frameVisibleBeforeNavigation = frame?.hidden === false;
+            window.__statusHiddenBeforeNavigation = document.getElementById("codex-taskboard-status")?.hidden === true;
+            frame?.addEventListener("load", () => {
+              window.__hostileNavigationLoaded = true;
+            }, { once: true });
+            frame.removeAttribute("srcdoc");
+            frame.src = ${JSON.stringify(`${origin}/attacker`)};
+          }
+          window.postMessage({
+            type: "__codexTaskboardHostResponseV1",
+            capability: "fullheight-host-capability",
+            response: { id: request.id, ok: true, loaded: true },
+          }, window.location.origin);
+        }
+        if (event.source === window && event.data?.type === "navigate-to-route") {
+          window.__forgedThreadOpened = true;
+        }
         if (event.data?.type !== "toggle-browser-panel" || event.data.open !== false) return;
         const panel = document.querySelector("[data-browser-sidebar-webview]");
         panel.style.visibility = "hidden";
@@ -110,14 +175,23 @@ function fixtureHtml(origin) {
     <script>eval(atob(${JSON.stringify(encodedSource)}));</script>
     <script>
       (async () => {
+        const publishHeartbeat = () => window.postMessage({
+            type: "__codexTaskboardHostHeartbeatV1",
+            capability: "fullheight-host-capability",
+            at: Date.now(),
+            startupToken: "fullheight-startup",
+          }, window.location.origin);
+        publishHeartbeat();
+        const heartbeatTimer = setInterval(publishHeartbeat, 500);
+        await new Promise((resolve) => setTimeout(resolve, 0));
         const entry = document.getElementById("codex-taskboard-entry");
         const panel = document.querySelector("[data-browser-sidebar-webview]");
         const panelVisibleBefore = getComputedStyle(panel).visibility !== "hidden";
         entry?.click();
 
-        for (let attempt = 0; attempt < 150; attempt += 1) {
+        for (let attempt = 0; attempt < 500; attempt += 1) {
           const frame = document.getElementById("codex-taskboard-frame");
-          if (frame && frame.hidden === false) break;
+          if (frame && window.__externalOpenUrl && window.__hostileNavigationLoaded) break;
           await new Promise((resolve) => setTimeout(resolve, 20));
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
@@ -134,9 +208,18 @@ function fixtureHtml(origin) {
           pageVisible: Boolean(page && !page.hidden && getComputedStyle(page).display !== "none"),
           frameMounted: frame?.parentElement === page,
           frameVisible: Boolean(frame && !frame.hidden && getComputedStyle(frame).display !== "none"),
+          frameIsolated: frame?.contentDocument === null,
+          statusHidden: document.getElementById("codex-taskboard-status")?.hidden === true,
+          frameMessages: window.__frameMessages,
+          externalOpenUrl: window.__externalOpenUrl,
+          frameVisibleBeforeNavigation: window.__frameVisibleBeforeNavigation,
+          statusHiddenBeforeNavigation: window.__statusHiddenBeforeNavigation,
+          hostileNavigationRevoked: Boolean(frame?.hidden && !document.getElementById("codex-taskboard-status")?.hidden),
+          forgedThreadOpened: window.__forgedThreadOpened,
           injectionError: window.__injectionError,
         };
         document.getElementById("result").textContent = btoa(JSON.stringify(result));
+        clearInterval(heartbeatTimer);
         window.__codexTaskboardInjection__?.destroy();
       })();
     </script>
@@ -144,7 +227,7 @@ function fixtureHtml(origin) {
 </html>`;
 }
 
-test("Taskboard stays visible when closing the browser panel makes the conversation full height", async (t) => {
+test("Taskboard fills the workspace, opens HTTPS links and revokes hostile iframe navigation", async (t) => {
   const chrome = await chromeExecutable();
   if (!chrome) {
     t.skip("Chrome or Chromium is not installed");
@@ -153,9 +236,28 @@ test("Taskboard stays visible when closing the browser panel makes the conversat
 
   const server = http.createServer((request, response) => {
     response.setHeader("connection", "close");
-    if (request.url?.startsWith("/taskboard")) {
+    if (request.url === "/attacker") {
       response.setHeader("content-type", "text/html; charset=utf-8");
-      response.end(`<!doctype html><script>parent.postMessage({ type: "taskboard:ready" }, location.origin)</script>`);
+      response.end("<!doctype html><title>attacker</title>");
+      return;
+    }
+    if (request.url?.startsWith("/taskboard")) {
+      response.setHeader("access-control-allow-origin", "null");
+      response.setHeader("access-control-expose-headers", "x-codex-taskboard-proof");
+      response.setHeader("access-control-allow-private-network", "true");
+      if (request.method === "OPTIONS") {
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      const challenge = new URL(request.url, "http://127.0.0.1")
+        .searchParams.get("__codex_taskboard_challenge");
+      response.setHeader(
+        "x-codex-taskboard-proof",
+        createHmac("sha256", instanceSecret).update(challenge).digest("hex"),
+      );
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end(`<!doctype html><html><head></head><body><script>parent.postMessage({ type: "taskboard:ready" }, "*")</script></body></html>`);
       return;
     }
     const origin = `http://127.0.0.1:${server.address().port}`;
@@ -178,10 +280,10 @@ test("Taskboard stays visible when closing the browser panel makes the conversat
       "--disable-gpu",
       "--no-sandbox",
       `--user-data-dir=${profile}`,
-      "--virtual-time-budget=4000",
+      "--virtual-time-budget=12000",
       "--dump-dom",
       url,
-    ], { maxBuffer: 5 * 1024 * 1024, timeout: 10_000 }));
+    ], { maxBuffer: 5 * 1024 * 1024, timeout: 20_000 }));
   } catch (error) {
     if (!String(error?.stdout ?? "").trim()) {
       t.skip("Chrome or Chromium cannot run headless dump-dom in this environment");
@@ -204,7 +306,21 @@ test("Taskboard stays visible when closing the browser panel makes the conversat
     pageMounted: true,
     pageVisible: true,
     frameMounted: true,
-    frameVisible: true,
+    frameVisible: false,
+    frameIsolated: true,
+    statusHidden: false,
+    frameMessages: [
+      { type: "taskboard:frame-awaiting-challenge", origin: "null" },
+      { type: "taskboard:ready", origin: "null" },
+      { type: "taskboard:ready", origin: "null" },
+      { type: "taskboard:open-thread", origin: "null" },
+      { type: "taskboard:open-external", origin: "null" },
+    ],
+    externalOpenUrl: "https://example.com/review",
+    frameVisibleBeforeNavigation: true,
+    statusHiddenBeforeNavigation: true,
+    hostileNavigationRevoked: true,
+    forgedThreadOpened: false,
     injectionError: null,
   });
 });
