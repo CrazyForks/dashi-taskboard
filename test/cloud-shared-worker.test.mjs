@@ -451,6 +451,49 @@ test("R2 attachment upload, download, delete, and D1 failure compensation form o
   assert.deepEqual(await cloud.listAttachmentKeys(), beforeKeys);
 });
 
+test("permanent task deletion requires archiving and cleans D1 and R2", async () => {
+  await createProject("temp-cloud-delete");
+  const created = await createTask("temp-cloud-delete", "Delete permanently");
+  const task = created.body.task;
+  const keysBefore = await cloud.listAttachmentKeys();
+  const uploaded = await cloud.request(`/api/tasks/${task.id}/attachments`, {
+    method: "POST",
+    actorName: alice,
+    headers: {
+      "content-type": "text/plain",
+      "x-taskboard-filename": "evidence.txt",
+    },
+    body: "attachment",
+  });
+  assert.ok((await cloud.listAttachmentKeys()).includes(uploaded.body.attachment.id));
+
+  const activeDelete = await cloud.request(`/api/tasks/${task.id}`, {
+    method: "DELETE",
+    actorName: alice,
+    json: { version: task.version },
+  });
+  assert.equal(activeDelete.response.status, 409);
+  assert.equal(activeDelete.body.error.code, "TASK_NOT_ARCHIVED");
+
+  const archived = await cloud.request(`/api/tasks/${task.id}/archive`, {
+    method: "POST",
+    actorName: alice,
+    json: { version: task.version },
+  });
+  const deleted = await cloud.request(`/api/tasks/${task.id}`, {
+    method: "DELETE",
+    actorName: alice,
+    json: { version: archived.body.task.version },
+  });
+  assert.equal(deleted.response.status, 204);
+  assert.deepEqual(await cloud.listAttachmentKeys(), keysBefore);
+  assert.equal((await cloud.request(`/api/tasks/${task.id}`, { actorName: alice })).response.status, 404);
+  assert.equal((await cloud.request("/api/projects/temp-cloud-delete", {
+    method: "DELETE",
+    actorName: alice,
+  })).response.status, 204);
+});
+
 test("the global revision is monotonic and lets clients poll only when data changed", async () => {
   const initial = await cloud.request("/api/revisions?since=0", { actorName: alice });
   assert.equal(initial.response.status, 200);

@@ -1779,6 +1779,54 @@ test("issue attachments can be uploaded, listed, opened, downloaded, and deleted
   assert.equal(deletedContent.body.error.code, "ATTACHMENT_NOT_FOUND");
 });
 
+test("permanent task deletion requires archiving and removes attachment files", async () => {
+  const baseUrl = await startServer();
+  await request(baseUrl, "/api/projects", {
+    method: "POST",
+    body: { id: "temp-delete-project", name: "Delete project", workspacePath: null },
+  });
+  const created = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { projectId: "temp-delete-project", title: "Delete permanently" },
+  });
+  const task = created.body.task;
+  const uploaded = await request(baseUrl, `/api/tasks/${task.id}/attachments`, {
+    method: "POST",
+    headers: {
+      "content-type": "text/plain",
+      "x-taskboard-filename": "evidence.txt",
+    },
+    body: "attachment",
+  });
+  const storagePath = path.join(
+    runningApps.at(-1).app.options.attachmentsDirectory,
+    uploaded.body.attachment.id,
+  );
+  await access(storagePath);
+
+  const activeDelete = await request(baseUrl, `/api/tasks/${task.id}`, {
+    method: "DELETE",
+    body: { version: task.version },
+  });
+  assert.equal(activeDelete.response.status, 409);
+  assert.equal(activeDelete.body.error.code, "TASK_NOT_ARCHIVED");
+
+  const archived = await request(baseUrl, `/api/tasks/${task.id}/archive`, {
+    method: "POST",
+    body: { version: task.version },
+  });
+  const deleted = await request(baseUrl, `/api/tasks/${task.id}`, {
+    method: "DELETE",
+    body: { version: archived.body.task.version },
+  });
+  assert.equal(deleted.response.status, 204);
+  await assert.rejects(access(storagePath), { code: "ENOENT" });
+  assert.equal((await request(baseUrl, `/api/tasks/${task.id}`)).response.status, 404);
+  assert.equal((await request(baseUrl, "/api/projects/temp-delete-project", {
+    method: "DELETE",
+  })).response.status, 204);
+});
+
 test("comments support attachments and deleting a comment removes its files", async () => {
   const baseUrl = await startServer();
   const createTaskResult = await request(baseUrl, "/api/tasks", {
