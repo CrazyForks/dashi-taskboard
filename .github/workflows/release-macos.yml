@@ -421,8 +421,16 @@ jobs:
           EXPECTED_ASSETS="$RUNNER_TEMP/expected-release-assets.txt"
           ACTUAL_ASSETS="$RUNNER_TEMP/actual-release-assets.txt"
 
-          DRAFT_RELEASE="$(gh api --header "$API_VERSION_HEADER" \
-            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+          RELEASES="$(gh api --header "$API_VERSION_HEADER" \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100")"
+          DRAFT_RELEASE="$(jq -c \
+            --arg tag "$RELEASE_TAG" \
+            '[.[] | select(.tag_name == $tag and .draft == true)] | if length == 1 then .[0] else empty end' \
+            <<< "$RELEASES")"
+          if [[ -z "$DRAFT_RELEASE" ]]; then
+            echo "找不到唯一的目标 Draft Release。" >&2
+            exit 1
+          fi
           if ! jq -e \
             --arg tag "$RELEASE_TAG" \
             --arg target "$GITHUB_SHA" \
@@ -433,9 +441,13 @@ jobs:
           fi
 
           mkdir -p "$DRAFT_ASSETS"
-          gh release download "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --dir "$DRAFT_ASSETS"
+          while IFS=$'\t' read -r ASSET_ID ASSET_NAME; do
+            gh api \
+              --header "$API_VERSION_HEADER" \
+              --header "Accept: application/octet-stream" \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" \
+              > "$DRAFT_ASSETS/$ASSET_NAME"
+          done < <(jq -r '.assets[] | [.id, .name] | @tsv' <<< "$DRAFT_RELEASE")
           sed -E 's/^[0-9a-f]{64}  //' "$MANIFEST_PATH" | LC_ALL=C sort > "$EXPECTED_ASSETS"
           node -e \
             'const fs=require("node:fs"); for (const name of fs.readdirSync(process.argv[1]).sort()) console.log(name)' \
@@ -465,8 +477,16 @@ jobs:
           set -euo pipefail
           API_VERSION_HEADER="X-GitHub-Api-Version: 2026-03-10"
           MANIFEST_PATH="$RUNNER_TEMP/trusted-release-manifest/release-assets.sha256"
-          DRAFT_RELEASE="$(gh api --header "$API_VERSION_HEADER" \
-            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+          RELEASES="$(gh api --header "$API_VERSION_HEADER" \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100")"
+          DRAFT_RELEASE="$(jq -c \
+            --arg tag "$RELEASE_TAG" \
+            '[.[] | select(.tag_name == $tag and .draft == true)] | if length == 1 then .[0] else empty end' \
+            <<< "$RELEASES")"
+          if [[ -z "$DRAFT_RELEASE" ]]; then
+            echo "找不到唯一的目标 Draft Release。" >&2
+            exit 1
+          fi
           EXPECTED_ASSET_COUNT="$(wc -l < "$MANIFEST_PATH" | tr -d ' ')"
 
           if ! jq -e \

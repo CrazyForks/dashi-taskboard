@@ -2241,7 +2241,7 @@ function decodePathPart(value, label) {
   return decoded;
 }
 
-async function attachmentContent(env, id, request) {
+async function attachmentContent(env, id, request, download = false) {
   const attachment = await requireAttachment(env, id);
   const object = await env.ATTACHMENTS.get(attachment.id);
   if (!object) {
@@ -2255,7 +2255,7 @@ async function attachmentContent(env, id, request) {
     /['()*]/g,
     (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
   );
-  const canOpenInline = INLINE_ATTACHMENT_TYPES.has(attachment.contentType);
+  const canOpenInline = !download && INLINE_ATTACHMENT_TYPES.has(attachment.contentType);
   return new Response(request.method === "HEAD" ? null : object.body, {
     status: 200,
     headers: {
@@ -2515,7 +2515,7 @@ async function routeApi(request, env, actor, url) {
   }
 
   const attachmentContentMatch = pathname.match(
-    /^\/api\/attachments\/([^/]+)\/content$/,
+    /^\/api\/attachments\/([^/]+)\/(content|download)$/,
   );
   if (attachmentContentMatch) {
     requireNoQuery(url, "Attachment routes");
@@ -2524,6 +2524,7 @@ async function routeApi(request, env, actor, url) {
       env,
       decodePathPart(attachmentContentMatch[1], "Attachment id"),
       request,
+      attachmentContentMatch[2] === "download",
     );
   }
 

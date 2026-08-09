@@ -47,6 +47,7 @@ struct LauncherState {
     child: Mutex<Option<u32>>,
     snapshot: Mutex<LauncherSnapshot>,
     intentional_stop: AtomicBool,
+    update_in_progress: AtomicBool,
     generation: AtomicU64,
     lifecycle: Mutex<()>,
     taskboard_listener: Mutex<Option<TcpListener>>,
@@ -75,6 +76,7 @@ impl LauncherState {
                 child_pid: None,
             }),
             intentional_stop: AtomicBool::new(false),
+            update_in_progress: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             lifecycle: Mutex::new(()),
             taskboard_listener: Mutex::new(None),
@@ -456,6 +458,10 @@ fn restart_launcher(
     state: &Arc<LauncherState>,
 ) -> Result<LauncherSnapshot, String> {
     let _lifecycle = state.lifecycle.lock().unwrap();
+    if state.update_in_progress.load(Ordering::SeqCst) {
+        append_log(state, "Launcher reopen ignored during update installation");
+        return Ok(state.snapshot.lock().unwrap().clone());
+    }
     stop_managed_child_locked(app, state);
     start_launcher_locked(app, state)
 }
@@ -549,10 +555,19 @@ async fn install_update(
     update_snapshot(app, state, |snapshot| {
         snapshot.update_message = "更新签名验证通过，正在安装…".into();
     });
-    stop_managed_child(app, state);
+    {
+        let _lifecycle = state.lifecycle.lock().unwrap();
+        state.update_in_progress.store(true, Ordering::SeqCst);
+        stop_managed_child_locked(app, state);
+    }
     if let Err(error) = update.install(&bytes) {
         append_log(state, &format!("Update installation failed: {error}"));
-        let restart_error = start_launcher(app, state).err();
+        let restart_error = {
+            let _lifecycle = state.lifecycle.lock().unwrap();
+            let restart_error = start_launcher_locked(app, state).err();
+            state.update_in_progress.store(false, Ordering::SeqCst);
+            restart_error
+        };
         if let Some(restart_error) = &restart_error {
             append_log(
                 state,

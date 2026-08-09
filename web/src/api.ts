@@ -527,5 +527,29 @@ export async function deleteAttachment(attachment: Attachment): Promise<void> {
 }
 
 export function attachmentContentUrl(attachment: Attachment): string {
-  return resolveTaskboardUrl(`/api/attachments/${encodeURIComponent(attachment.id)}/content`);
+  return `api/attachments/${encodeURIComponent(attachment.id)}/content`;
+}
+
+export function attachmentDownloadUrl(attachment: Attachment): string {
+  return `api/attachments/${encodeURIComponent(attachment.id)}/download`;
+}
+
+export function resolvePersistedAttachmentUrl(value: string): string {
+  if (/^\/?api\/attachments\/[^/?#]+\/content$/.test(value)) {
+    return resolveTaskboardUrl(value);
+  }
+  try {
+    const url = new URL(value);
+    const match = url.pathname.match(/\/api\/attachments\/([^/]+)\/content$/);
+    if (url.protocol === "http:" && url.hostname === "127.0.0.1" && match) {
+      return resolveTaskboardUrl(`/api/attachments/${match[1]}/content`);
+    }
+  } catch {
+    return value;
+  }
+  return value;
+}
+
+export function markdownIncludesAttachment(markdown: string, attachment: Attachment): boolean {
+  return markdown.includes(`api/attachments/${encodeURIComponent(attachment.id)}/content`);
 }

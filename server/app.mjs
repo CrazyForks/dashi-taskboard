@@ -2383,7 +2383,7 @@ export function createTaskboardServer(options = {}) {
         return methodNotAllowed(response, ["GET", "POST"]);
       }
 
-      const attachmentContentRoute = pathname.match(/^\/api\/attachments\/([^/]+)\/content$/);
+      const attachmentContentRoute = pathname.match(/^\/api\/attachments\/([^/]+)\/(content|download)$/);
       if (attachmentContentRoute) {
         let id;
         try {
@@ -2406,7 +2406,8 @@ export function createTaskboardServer(options = {}) {
         const encodedFilename = encodeURIComponent(attachment.filename).replace(/['()*]/g, (character) => (
           `%${character.charCodeAt(0).toString(16).toUpperCase()}`
         ));
-        const canOpenInline = INLINE_ATTACHMENT_TYPES.has(attachment.contentType);
+        const canOpenInline = attachmentContentRoute[2] === "content"
+          && INLINE_ATTACHMENT_TYPES.has(attachment.contentType);
         response.writeHead(200, {
           "cache-control": "private, no-store",
           "content-disposition": `${canOpenInline ? "inline" : "attachment"}; filename*=UTF-8''${encodedFilename}`,
