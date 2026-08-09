@@ -132,13 +132,13 @@ npm start
 
 在 `macos-release` environment secrets 中配置 `RELEASE_RULESET_TOKEN`。它必须是仅限本仓库的 fine-grained PAT，并具有 Repository Administration 写权限，使 GitHub API 返回 `bypass_actors`，并允许 promotion 读取 immutable releases 设置。promotion 只把该 token 用于这两项管理状态查询；Secret 缺失、字段不可见或 API 权限不足时，发布会失败。
 
-`GITHUB_TOKEN` 由 GitHub Actions 自动提供。工作流给它 `actions: read`、`contents: write` 和 `deployments: write` 权限，用于下载可信 manifest、创建 Draft、运行受保护的 promotion 和发布 Release。
+`GITHUB_TOKEN` 由 GitHub Actions 自动提供。工作流给它 `contents: write` 和 `deployments: write` 权限，用于创建 Draft、运行受保护的 promotion 和发布 Release。
 
 发布前还必须完成以下仓库设置：
 
 - 启用覆盖当前 `app-v*` 标签的 active tag ruleset。`exclude` 必须为空，`bypass_actors` 必须为空，并启用禁止更新和禁止删除规则。
 - 创建 `macos-release` environment，配置必需审核人，并启用“禁止发起人自行审核”。
-- 启用 immutable releases。promotion 在发布前检查此设置，并在发布后校验 Release API 的 `immutable: true`、Release attestation 和每个本地资产的 attestation。
+- 启用 immutable releases。promotion 在发布前检查此设置，并在发布后校验 Release API 的 `immutable: true` 和每个资产的 SHA-256。
 
 ### 发布 `app-v0.2.0`
 
@@ -152,7 +152,7 @@ npm start
    git push origin app-v0.2.0
    ```
 
-5. 按环境保护提示批准构建 job，并等待工作流创建 Draft Release。不要在 GitHub Release 页面直接发布。
+5. 等待构建 job 创建 Draft Release。不要在 GitHub Release 页面直接发布。
 6. 完成下方检查后，批准等待中的 `macos-release` promotion job。
 7. 等待 promotion 重新下载并验证全部远程资产、发布 Release，并确认最终 Release 和资产不可变。
 

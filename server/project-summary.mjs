@@ -13,6 +13,16 @@ const STATUS_LABELS = {
   canceled: "取消",
 };
 
+function signalProcessGroup(child, signal) {
+  if (Number.isInteger(child?.pid)) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {}
+  }
+  child?.kill(signal);
+}
+
 function isDue(summary) {
   if (!summary.attemptedAt) return true;
   return Date.now() - new Date(summary.attemptedAt).getTime() >= DAY_MS;
@@ -50,8 +60,6 @@ export class ProjectSummaryService {
     this.codexExecutable = options.codexExecutable;
     this.workspacePath = options.workspacePath;
     this.processEnv = options.processEnv ?? process.env;
-    this.processRegistry = options.processRegistry;
-    this.killGraceMs = options.killGraceMs ?? 1_000;
     this.active = new Map();
     this.closed = false;
     this.timer = setInterval(() => void this.refreshDueProjects(), CHECK_INTERVAL_MS);
@@ -77,7 +85,7 @@ export class ProjectSummaryService {
   refresh(projectId) {
     const current = this.active.get(projectId);
     if (current) return current.promise;
-    const active = { terminate: null, promise: null };
+    const active = { child: null, promise: null };
     active.promise = this.#generate(projectId, active)
       .finally(() => this.active.delete(projectId));
     this.active.set(projectId, active);
@@ -97,7 +105,7 @@ export class ProjectSummaryService {
       const tasks = this.database.listTasks({ projectId, archived: "false" });
       let generatedSummary = "";
       let terminalError = "";
-      const { completion, terminate } = await spawnCodexTurn({
+      const { child, completion } = spawnCodexTurn({
         executable: this.codexExecutable,
         args: [
           "exec",
@@ -115,10 +123,6 @@ export class ProjectSummaryService {
         ],
         prompt: buildPrompt(project, tasks),
         env: this.processEnv,
-        processOwner: {
-          ...this.processRegistry,
-          owner: `summary:${projectId}`,
-        },
         onRawEvent: (event) => {
           if (
             event.type === "item.completed"
@@ -132,10 +136,7 @@ export class ProjectSummaryService {
           }
         },
       });
-      active.terminate = terminate;
-      if (this.closed) {
-        void terminate({ terminateGraceMs: this.killGraceMs }).catch(() => {});
-      }
+      active.child = child;
       const result = await completion;
       if (result.exitCode !== 0 || terminalError) {
         throw new Error(terminalError || `Codex 退出码 ${result.exitCode}`);
@@ -156,9 +157,7 @@ export class ProjectSummaryService {
     this.closed = true;
     clearInterval(this.timer);
     const active = [...this.active.values()];
-    for (const entry of active) {
-      void entry.terminate?.({ terminateGraceMs: this.killGraceMs }).catch(() => {});
-    }
+    for (const entry of active) signalProcessGroup(entry.child, "SIGTERM");
     await Promise.allSettled(active.map((entry) => entry.promise));
   }
 }

@@ -114,10 +114,7 @@ export async function reconcileInjectionRuntime({
   evaluateCurrentSource,
   publishRegistration,
   reopen,
-  flushCurrent,
 }) {
-  const replaced = currentStatus.sourceHash !== sourceHash;
-  if (replaced) await flushCurrent?.();
   if (currentStatus.scriptIdentifier) {
     try {
       await removeRegisteredSource(currentStatus.scriptIdentifier);
@@ -126,6 +123,7 @@ export async function reconcileInjectionRuntime({
   const scriptIdentifier = await registerCurrentSource(source);
   await evaluateCurrentSource(source);
   await publishRegistration(scriptIdentifier);
+  const replaced = currentStatus.sourceHash !== sourceHash;
   const shouldRemainOpen = currentStatus.pageVisible === true;
   if (replaced && shouldRemainOpen) await reopen();
   return { replaced, scriptIdentifier, shouldRemainOpen };

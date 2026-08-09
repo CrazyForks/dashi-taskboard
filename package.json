@@ -18,7 +18,6 @@
     "app:dev": "npm run app:prepare && tauri dev",
     "app:build": "npm run app:prepare -- --target universal-apple-darwin && CI=true tauri build --target universal-apple-darwin --bundles app,dmg",
     "app:preflight": "node scripts/preflight-macos-app.mjs",
-    "app:verify-updater-lifecycle": "node scripts/verify-tauri-updater-lifecycle.mjs",
     "app:verify-packaged-taskctl": "node scripts/verify-packaged-taskctl.mjs",
     "app:verify-release": "node scripts/verify-macos-release.mjs",
     "tauri": "tauri",
@@ -55,7 +54,6 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "miniflare": "^4.20260722.0",
-    "playwright-core": "^1.62.1",
     "typescript": "^7.0.2",
     "vite": "^8.1.5",
     "wrangler": "^4.114.0"

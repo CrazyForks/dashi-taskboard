@@ -47,11 +47,10 @@ struct LauncherState {
     child: Mutex<Option<u32>>,
     snapshot: Mutex<LauncherSnapshot>,
     intentional_stop: AtomicBool,
-    update_in_progress: AtomicBool,
     generation: AtomicU64,
     lifecycle: Mutex<()>,
     taskboard_listener: Mutex<Option<TcpListener>>,
-    instance_lock: Mutex<Option<File>>,
+    _instance_lock: File,
     data_directory: PathBuf,
     log_path: PathBuf,
     pid_record_path: PathBuf,
@@ -76,11 +75,10 @@ impl LauncherState {
                 child_pid: None,
             }),
             intentional_stop: AtomicBool::new(false),
-            update_in_progress: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             lifecycle: Mutex::new(()),
             taskboard_listener: Mutex::new(None),
-            instance_lock: Mutex::new(Some(instance_lock)),
+            _instance_lock: instance_lock,
             pid_record_path: data_directory.join("launcher-child.json"),
             data_directory,
             log_path: log_directory.join("codex-taskboard-launcher.log"),
@@ -166,7 +164,9 @@ fn find_codex_app(home_directory: &Path) -> Option<PathBuf> {
 
 fn send_process_group_signal(pid: u32, signal: i32) {
     unsafe {
-        libc::kill(-(pid as i32), signal);
+        if libc::kill(-(pid as i32), signal) != 0 {
+            libc::kill(pid as i32, signal);
+        }
     }
 }
 
@@ -215,36 +215,6 @@ fn stop_recorded_child(state: &LauncherState) {
     let _ = fs::remove_file(&state.pid_record_path);
 }
 
-fn cleanup_recorded_ai_turns(app: &AppHandle, state: &LauncherState) -> Result<(), String> {
-    let resource_directory = app
-        .path()
-        .resource_dir()
-        .map_err(|error| error.to_string())?;
-    let node_path = std::env::current_exe()
-        .map_err(|error| error.to_string())?
-        .parent()
-        .ok_or_else(|| "无法定位 App 可执行文件目录".to_string())?
-        .join("node");
-    let cleanup_script = resource_directory.join("app/server/ai-turn-process-registry.mjs");
-    let registry_directory = state.data_directory.join("ai-turn-processes");
-    let output = StdCommand::new(node_path)
-        .arg(cleanup_script)
-        .arg("--cleanup")
-        .arg(registry_directory)
-        .output()
-        .map_err(|error| error.to_string())?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(if message.is_empty() {
-            "无法清理遗留 AI turn".to_string()
-        } else {
-            message
-        })
-    }
-}
-
 fn write_pid_record(
     state: &LauncherState,
     pid: u32,
@@ -275,18 +245,8 @@ fn stop_managed_child_locked(app: &AppHandle, state: &Arc<LauncherState>) {
     state.intentional_stop.store(true, Ordering::SeqCst);
     if let Some(pid) = state.child.lock().unwrap().take() {
         append_log(state, &format!("Stopping launcher child {pid}"));
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
-        let deadline = Instant::now() + STOP_TIMEOUT;
-        while unsafe { libc::kill(pid as i32, 0) == 0 } && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(100));
-        }
         terminate_process_group(pid);
         clear_pid_record(state, pid);
-    }
-    if let Err(error) = cleanup_recorded_ai_turns(app, state) {
-        append_log(state, &format!("AI turn cleanup failed: {error}"));
     }
     update_snapshot(app, state, |snapshot| {
         snapshot.phase = "stopped".into();
@@ -337,8 +297,6 @@ fn start_launcher_locked(
         return Ok(state.snapshot.lock().unwrap().clone());
     }
 
-    stop_recorded_child(state);
-    cleanup_recorded_ai_turns(app, state)?;
     let home_directory = app.path().home_dir().map_err(|error| error.to_string())?;
     let codex_app = find_codex_app(&home_directory).ok_or_else(|| {
         "未找到官方 ChatGPT.app 或 Codex.app。请先安装到 Applications 文件夹。".to_string()
@@ -354,6 +312,7 @@ fn start_launcher_locked(
         .parent()
         .ok_or_else(|| "无法定位 App 可执行文件目录".to_string())?
         .join("node");
+    stop_recorded_child(state);
     let generation = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
     state.intentional_stop.store(false, Ordering::SeqCst);
     update_snapshot(app, state, |snapshot| {
@@ -398,8 +357,6 @@ fn start_launcher_locked(
         .process_group(0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(feature = "updater-lifecycle-test")]
-    command.arg("--updater-lifecycle-test");
     unsafe {
         command.pre_exec(move || {
             if libc::dup2(taskboard_listener_fd, TASKBOARD_LISTEN_FD) < 0 {
@@ -445,17 +402,13 @@ fn start_launcher_locked(
             &event_state,
             &format!("Launcher child {pid} exited: {status:?}"),
         );
-        let lifecycle = event_state.lifecycle.lock().unwrap();
+        terminate_process_group(pid);
         if event_state.generation.load(Ordering::SeqCst) != generation {
             return;
         }
         let mut current_child = event_state.child.lock().unwrap();
         if *current_child != Some(pid) {
             return;
-        }
-        terminate_process_group(pid);
-        if let Err(error) = cleanup_recorded_ai_turns(&event_app, &event_state) {
-            append_log(&event_state, &format!("AI turn cleanup failed: {error}"));
         }
         *current_child = None;
         drop(current_child);
@@ -468,20 +421,16 @@ fn start_launcher_locked(
                 snapshot.message = "任务面板进程已退出，正在恢复…".into();
             }
         });
-        drop(lifecycle);
         if intentional {
             return;
         }
         thread::sleep(Duration::from_secs(2));
-        let lifecycle = event_state.lifecycle.lock().unwrap();
         if event_state.intentional_stop.load(Ordering::SeqCst)
             || event_state.generation.load(Ordering::SeqCst) != generation
         {
             return;
         }
-        let recovery = start_launcher_locked(&event_app, &event_state);
-        drop(lifecycle);
-        if let Err(error) = recovery {
+        if let Err(error) = start_launcher(&event_app, &event_state) {
             append_log(&event_state, &format!("Launcher recovery failed: {error}"));
             update_snapshot(&event_app, &event_state, |snapshot| {
                 snapshot.phase = "error".into();
@@ -507,10 +456,6 @@ fn restart_launcher(
     state: &Arc<LauncherState>,
 ) -> Result<LauncherSnapshot, String> {
     let _lifecycle = state.lifecycle.lock().unwrap();
-    if state.update_in_progress.load(Ordering::SeqCst) {
-        append_log(state, "Launcher reopen ignored during update installation");
-        return Ok(state.snapshot.lock().unwrap().clone());
-    }
     stop_managed_child_locked(app, state);
     start_launcher_locked(app, state)
 }
@@ -604,28 +549,10 @@ async fn install_update(
     update_snapshot(app, state, |snapshot| {
         snapshot.update_message = "更新签名验证通过，正在安装…".into();
     });
-    {
-        let _lifecycle = state.lifecycle.lock().unwrap();
-        state.update_in_progress.store(true, Ordering::SeqCst);
-        stop_managed_child_locked(app, state);
-    }
-    #[cfg(feature = "updater-lifecycle-test")]
-    if let Ok(gate_path) = std::env::var("CODEX_TASKBOARD_UPDATER_INSTALL_GATE") {
-        let gate_path = PathBuf::from(gate_path);
-        fs::write(&gate_path, b"paused").map_err(|error| error.to_string())?;
-        let resume_path = gate_path.with_extension("resume");
-        while !resume_path.exists() {
-            thread::sleep(Duration::from_millis(50));
-        }
-    }
+    stop_managed_child(app, state);
     if let Err(error) = update.install(&bytes) {
         append_log(state, &format!("Update installation failed: {error}"));
-        let restart_error = {
-            let _lifecycle = state.lifecycle.lock().unwrap();
-            let restart_error = start_launcher_locked(app, state).err();
-            state.update_in_progress.store(false, Ordering::SeqCst);
-            restart_error
-        };
+        let restart_error = start_launcher(app, state).err();
         if let Some(restart_error) = &restart_error {
             append_log(
                 state,
@@ -672,9 +599,6 @@ async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
 
     let version = update.version.clone();
     append_log(state, &format!("Showing update prompt for {version}"));
-    #[cfg(feature = "updater-lifecycle-test")]
-    let install_now = true;
-    #[cfg(not(feature = "updater-lifecycle-test"))]
     let install_now = app
         .dialog()
         .message(format!(
@@ -696,22 +620,17 @@ async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
             state,
             &format!("Startup update installation failed: {error}"),
         );
-        #[cfg(not(feature = "updater-lifecycle-test"))]
-        {
-            let service_recovered = state.snapshot.lock().unwrap().child_pid.is_some();
-            let service_message = if service_recovered {
-                "任务面板服务已恢复。"
-            } else {
-                "任务面板服务未能恢复，请重新打开 App。"
-            };
-            show_error_dialog(
-                app,
-                "Codex Taskboard 更新失败",
-                &format!(
-                    "更新未完成。{service_message}\n\n请稍后重试。详情见启动日志。\n\n{error}"
-                ),
-            );
-        }
+        let service_recovered = state.snapshot.lock().unwrap().child_pid.is_some();
+        let service_message = if service_recovered {
+            "任务面板服务已恢复。"
+        } else {
+            "任务面板服务未能恢复，请重新打开 App。"
+        };
+        show_error_dialog(
+            app,
+            "Codex Taskboard 更新失败",
+            &format!("更新未完成。{service_message}\n\n请稍后重试。详情见启动日志。\n\n{error}"),
+        );
     }
 }
 
@@ -786,7 +705,9 @@ fn main() {
         tauri::RunEvent::Exit => {
             if let Some(state) = app_handle.try_state::<Arc<LauncherState>>() {
                 stop_managed_child(app_handle, &state);
-                drop(state.instance_lock.lock().unwrap().take());
+                unsafe {
+                    libc::flock(state._instance_lock.as_raw_fd(), libc::LOCK_UN);
+                }
             }
         }
         _ => {}

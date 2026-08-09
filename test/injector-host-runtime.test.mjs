@@ -139,7 +139,6 @@ test("attach replaces an old runtime with the current source and restores an ope
     },
     evaluateCurrentSource: async (source) => calls.push(["evaluate", source]),
     publishRegistration: async (identifier) => calls.push(["publish", identifier]),
-    flushCurrent: async () => calls.push(["flush"]),
     reopen: async () => calls.push(["open"]),
   });
 
@@ -149,7 +148,6 @@ test("attach replaces an old runtime with the current source and restores an ope
     shouldRemainOpen: true,
   });
   assert.deepEqual(calls, [
-    ["flush"],
     ["remove", "old-registration"],
     ["register", "current-source"],
     ["evaluate", "current-source"],

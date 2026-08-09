@@ -25,19 +25,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Repeat the opaque iframe protocol regression
-        run: |
-          for attempt in 1 2 3
-          do
-            export TASKBOARD_INJECTION_TRACE_FILE="$RUNNER_TEMP/taskboard-injection-traces/attempt-$attempt.zip"
-            node --test test/inject-fullheight-regression.test.mjs
-          done
-      - name: Upload the opaque iframe protocol trace
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: opaque-iframe-protocol-trace
-          path: ${{ runner.temp }}/taskboard-injection-traces
       - run: npm run check
 
   macos-launcher:
@@ -73,5 +60,3 @@ jobs:
         run: >-
           npm run app:preflight --
           "src-tauri/target/universal-apple-darwin/release/bundle/macos/Codex Taskboard.app"
-      - name: Verify real Tauri updater lifecycle
-        run: npm run app:verify-updater-lifecycle

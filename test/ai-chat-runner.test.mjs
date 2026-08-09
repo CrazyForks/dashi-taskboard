@@ -160,10 +160,6 @@ if (args[0] === "app-server") {
       CODEX_TASKBOARD_PORT: "47823",
       CODEX_TASKBOARD_VERSION: "0.2.0",
     },
-    processRegistry: {
-      registryDirectory: path.join(directory, "ai-turn-processes"),
-      generation: "fixture-generation",
-    },
     killGraceMs: 50,
   });
   return {
@@ -325,31 +321,6 @@ test("malformed Codex JSONL fails the run", async () => {
   }
 });
 
-test("turn owner registration failure settles the created run", async () => {
-  const fixture = await createFixture();
-  try {
-    const registryDirectory = path.join(fixture.directory, "ai-turn-processes");
-    await writeFile(registryDirectory, "not a directory");
-    const thread = await fixture.service.createThread({ projectId: "project" });
-
-    await assert.rejects(
-      fixture.service.startTurn(thread.id, { message: "must fail before Codex starts" }),
-    );
-
-    const [run] = fixture.database.listAiChatRuns(thread.id);
-    assert.equal(run.status, "failed");
-    assert.ok(run.finishedAt);
-    assert.equal(
-      fixture.service.getThreadSnapshot(thread.id).events.some(
-        (event) => event.runId === run.id && event.role === "error",
-      ),
-      true,
-    );
-  } finally {
-    await fixture.close();
-  }
-});
-
 test("parser and event callback failures kill a SIGTERM-resistant process group", async () => {
   const fixture = await createFixture();
   try {
@@ -451,10 +422,6 @@ test("startup marks abandoned runs interrupted while preserving the Codex thread
     codexExecutable: path.join(fixture.directory, "fake-codex.mjs"),
     codexStatePath: path.join(fixture.directory, "codex-state.json"),
     manageTaskboardSkillPath: "/fixture/manage-taskboard/SKILL.md",
-    processRegistry: {
-      registryDirectory: path.join(fixture.directory, "ai-turn-processes"),
-      generation: "restarted-generation",
-    },
   });
   fixture.service = restarted;
   try {

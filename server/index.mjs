@@ -1,34 +1,17 @@
 import os from "node:os";
 import { pathToFileURL } from "node:url";
 
-import {
-  createTaskboardServer,
-  resolveHost,
-  resolvePort,
-  resolveServerOptions,
-} from "./app.mjs";
-import { cleanupAiTurnProcesses } from "./ai-turn-process-registry.mjs";
+import { createTaskboardServer, resolveHost, resolvePort } from "./app.mjs";
 
 export { createTaskboardServer, resolveHost, resolvePort, resolveServerOptions } from "./app.mjs";
 
 async function main() {
-  const options = resolveServerOptions();
-  const app = createTaskboardServer(options);
+  const app = createTaskboardServer();
   const host = resolveHost();
   const listenFd = process.env.CODEX_TASKBOARD_LISTEN_FD === undefined
     ? null
     : Number(process.env.CODEX_TASKBOARD_LISTEN_FD);
-  let address;
-  try {
-    address = await app.listen({ host, port: resolvePort(), fd: listenFd });
-    await cleanupAiTurnProcesses({
-      registryDirectory: options.aiTurnRegistryDirectory,
-      excludeGeneration: options.serverGeneration,
-    });
-  } catch (error) {
-    await app.close();
-    throw error;
-  }
+  const address = await app.listen({ host, port: resolvePort(), fd: listenFd });
   console.log(`Codex Taskboard listening on http://127.0.0.1:${address.port}`);
   if (host === "0.0.0.0") {
     const addresses = Object.values(os.networkInterfaces())

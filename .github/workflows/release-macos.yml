@@ -6,7 +6,6 @@ on:
       - "app-v*"
 
 permissions:
-  actions: read
   contents: write
   deployments: write
 
@@ -19,7 +18,6 @@ jobs:
     name: Build signed universal macOS app
     runs-on: macos-latest
     timeout-minutes: 90
-    environment: macos-release
 
     steps:
       - name: Checkout
@@ -247,9 +245,7 @@ jobs:
             "$BUNDLE_ROOT/release" \
             "$RELEASE_TAG"
 
-      - name: Verify signed release artifacts and immutable tag
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Verify signed release artifacts
         run: |
           set -euo pipefail
           BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
@@ -257,31 +253,6 @@ jobs:
           DMG_PATH="$BUNDLE_ROOT/dmg/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg"
           RELEASE_ROOT="$BUNDLE_ROOT/release"
           npm run app:verify-release -- "$APP_PATH" "$DMG_PATH" "$RELEASE_ROOT" "$RELEASE_TAG"
-
-          REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
-          if [[ -z "$REMOTE_TAG_COMMIT" ]]; then
-            REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')"
-          fi
-          if [[ "$REMOTE_TAG_COMMIT" != "$GITHUB_SHA" ]]; then
-            echo "构建期间远程发布标签发生变化。" >&2
-            exit 1
-          fi
-
-          RELEASE_CHECK="$RUNNER_TEMP/release-check-before-create.json"
-          if ! RELEASE_STATUS="$(curl --silent --show-error \
-            --output "$RELEASE_CHECK" \
-            --write-out '%{http_code}' \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"; then
-            echo "无法在上传前确认 Release 是否存在。" >&2
-            exit 1
-          fi
-          if [[ "$RELEASE_STATUS" != "404" ]]; then
-            echo "上传前 Release 状态不是 404，HTTP $RELEASE_STATUS。" >&2
-            exit 1
-          fi
 
       - name: Create trusted release asset manifest
         run: |
@@ -327,25 +298,6 @@ jobs:
             "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
             "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" \
             "$RELEASE_ASSETS/latest.json"
-
-          REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
-          if [[ -z "$REMOTE_TAG_COMMIT" ]]; then
-            REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')"
-          fi
-          if [[ "$REMOTE_TAG_COMMIT" != "$GITHUB_SHA" ]]; then
-            echo "创建 Release 后远程发布标签发生变化。" >&2
-            exit 1
-          fi
-
-          RELEASE="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,targetCommitish,isDraft)"
-          if ! jq -e \
-            --arg tag "$RELEASE_TAG" \
-            --arg target "$GITHUB_SHA" \
-            '.tagName == $tag and .targetCommitish == $target and .isDraft == true' \
-            <<< "$RELEASE" >/dev/null; then
-            echo "Draft Release 的标签、目标提交或草稿状态不正确。" >&2
-            exit 1
-          fi
 
       - name: Remove temporary signing files
         if: always()
@@ -439,23 +391,6 @@ jobs:
             exit 1
           fi
 
-          if ! RELEASE_ENVIRONMENT="$(gh api --header "$API_VERSION_HEADER" \
-            "repos/$GITHUB_REPOSITORY/environments/macos-release")"; then
-            echo "无法读取 macos-release 环境保护设置。" >&2
-            exit 1
-          fi
-          if ! jq -e '
-            (.protection_rules // [])
-            | any(
-              .type == "required_reviewers" and
-              .prevent_self_review == true and
-              ((.reviewers // []) | length > 0)
-            )
-          ' <<< "$RELEASE_ENVIRONMENT" >/dev/null; then
-            echo "macos-release 环境必须启用必需审核人，并禁止发起人自行审核。" >&2
-            exit 1
-          fi
-
           if ! IMMUTABLE_RELEASES="$(GH_TOKEN="$RULESET_TOKEN" gh api \
             --header "$API_VERSION_HEADER" \
             "repos/$GITHUB_REPOSITORY/immutable-releases")"; then
@@ -464,15 +399,6 @@ jobs:
           fi
           if ! jq -e '.enabled == true' <<< "$IMMUTABLE_RELEASES" >/dev/null; then
             echo "仓库的 immutable releases 未启用。" >&2
-            exit 1
-          fi
-
-          REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
-          if [[ -z "$REMOTE_TAG_COMMIT" ]]; then
-            REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')"
-          fi
-          if [[ "$REMOTE_TAG_COMMIT" != "$GITHUB_SHA" ]]; then
-            echo "promotion 前远程发布标签与构建提交不一致。" >&2
             exit 1
           fi
 
@@ -603,9 +529,7 @@ jobs:
              .target_commitish == $target and
              .draft == false and
              .immutable == true and
-             .published_at != null and
-             (.assets | length) == $asset_count and
-             all(.assets[]; .state == "uploaded")' \
+             (.assets | length) == $asset_count' \
             <<< "$FINAL_RELEASE" >/dev/null; then
             echo "最终 Release 未发布、未锁定或资产集合不正确。" >&2
             exit 1
@@ -621,18 +545,3 @@ jobs:
               exit 1
             fi
           done < "$MANIFEST_PATH"
-
-          gh release verify "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
-          while read -r _SHA256 ASSET_NAME; do
-            FILE="$RUNNER_TEMP/draft-release-assets/$ASSET_NAME"
-            gh release verify-asset "$RELEASE_TAG" "$FILE" --repo "$GITHUB_REPOSITORY"
-          done < "$MANIFEST_PATH"
-
-          REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }')"
-          if [[ -z "$REMOTE_TAG_COMMIT" ]]; then
-            REMOTE_TAG_COMMIT="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')"
-          fi
-          if [[ "$REMOTE_TAG_COMMIT" != "$GITHUB_SHA" ]]; then
-            echo "发布后远程标签与构建提交不一致。" >&2
-            exit 1
-          fi

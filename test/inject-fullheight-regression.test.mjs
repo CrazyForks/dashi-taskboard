@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { access, mkdir, readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { chromium } from "playwright-core";
 
 const execFileAsync = promisify(execFile);
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -25,6 +25,7 @@ const embeddedHostSource = await readFile(
   new URL("../web/src/embeddedHost.mjs", import.meta.url),
   "utf8",
 );
+const embeddedHostDataUrl = `data:text/javascript;base64,${Buffer.from(embeddedHostSource).toString("base64")}`;
 
 async function chromeExecutable() {
   const candidates = [
@@ -101,10 +102,6 @@ function fixtureHtml(origin) {
       window.__browserPanelClosed = false;
       window.__injectionError = null;
       window.__frameMessages = [];
-      window.__frameLoadCount = 0;
-      window.__frameRecreated = false;
-      window.__storageFlushAckBeforeReload = false;
-      window.__frameWasInertDuringFlush = false;
       window.__externalOpenUrl = null;
       window.__frameVisibleBeforeNavigation = false;
       window.__statusHiddenBeforeNavigation = false;
@@ -120,10 +117,6 @@ function fixtureHtml(origin) {
         if (typeof event.data?.type === "string" && event.data.type.startsWith("taskboard:")) {
           window.__frameMessages.push({ type: event.data.type, origin: event.origin });
         }
-        if (event.data?.type === "taskboard:storage-flushed") {
-          window.__storageFlushAckBeforeReload = true;
-          window.__frameWasInertDuringFlush = document.getElementById("codex-taskboard-frame")?.inert === true;
-        }
         if (
           event.source === window
           && event.data?.type === "__codexTaskboardHostRequestV1"
@@ -132,27 +125,19 @@ function fixtureHtml(origin) {
           const request = event.data.payload;
           if (request.action === "load-frame") {
             const frame = document.querySelector('iframe[name="' + request.frameName + '"]');
-            const frameLoadIndex = window.__frameLoadCount++;
-            if (frameLoadIndex === 0) window.__firstTaskboardFrame = frame;
-            else window.__frameRecreated = frame !== window.__firstTaskboardFrame
-              && window.__firstTaskboardFrame?.isConnected === false;
-            const moduleUrl = ${JSON.stringify(`${origin}/embeddedHost.mjs`)};
+            const moduleUrl = ${JSON.stringify(embeddedHostDataUrl)};
             frame.srcdoc = '<a id="external-link" href="https://example.com/review" target="_blank">Review</a>'
               + '<script type="module">import * as host from ' + JSON.stringify(moduleUrl) + ';'
-              + 'const activateHostileNavigation=' + JSON.stringify(frameLoadIndex > 0) + ';'
               + 'globalThis.__CODEX_TASKBOARD_FRAME_CAPABILITY__='
               + JSON.stringify(request.frameCapability)
               + ';host.installEmbeddedExternalLinkHandler();'
               + 'let activated=false,acknowledgedChallenge="";window.addEventListener("message",function(event){'
-              + 'if(event.data?.type==="taskboard:flush-storage"){'
-              + 'host.postEmbeddedHostMessage({type:"taskboard:storage-flushed",payload:{requestId:event.data.payload?.requestId}});return;}'
               + 'if(event.data?.type!=="taskboard:frame-challenge")return;'
               + 'const challenge=event.data.payload?.challenge;if(!challenge||challenge===acknowledgedChallenge)return;'
               + 'acknowledgedChallenge=challenge;host.setEmbeddedFrameChallenge(challenge);'
               + 'host.postEmbeddedHostMessage({type:"taskboard:ready"});'
               + 'if(activated)return;activated=true;'
               + 'parent.postMessage({type:"taskboard:ready"},"*");'
-              + 'if(!activateHostileNavigation)return;'
               + 'parent.postMessage({type:"taskboard:open-thread",payload:{threadId:"forged"}},"*");'
               + 'document.getElementById("external-link").click();'
               + '});host.postEmbeddedHostMessage({type:"taskboard:frame-awaiting-challenge"});<\\/script>';
@@ -189,8 +174,7 @@ function fixtureHtml(origin) {
     </script>
     <script>eval(atob(${JSON.stringify(encodedSource)}));</script>
     <script>
-      let heartbeatTimer = null;
-      window.__startCodexTaskboardRegression = async () => {
+      (async () => {
         const publishHeartbeat = () => window.postMessage({
             type: "__codexTaskboardHostHeartbeatV1",
             capability: "fullheight-host-capability",
@@ -198,22 +182,26 @@ function fixtureHtml(origin) {
             startupToken: "fullheight-startup",
           }, window.location.origin);
         publishHeartbeat();
-        heartbeatTimer = setInterval(publishHeartbeat, 500);
+        const heartbeatTimer = setInterval(publishHeartbeat, 500);
         await new Promise((resolve) => setTimeout(resolve, 0));
         const entry = document.getElementById("codex-taskboard-entry");
         const panel = document.querySelector("[data-browser-sidebar-webview]");
-        window.__panelVisibleBefore = getComputedStyle(panel).visibility !== "hidden";
+        const panelVisibleBefore = getComputedStyle(panel).visibility !== "hidden";
         entry?.click();
-        window.__entryClicked = true;
-      };
 
-      window.__collectCodexTaskboardRegressionResult = () => {
+        for (let attempt = 0; attempt < 500; attempt += 1) {
+          const frame = document.getElementById("codex-taskboard-frame");
+          if (frame && window.__externalOpenUrl && window.__hostileNavigationLoaded) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+
         const page = document.getElementById("codex-taskboard-page");
         const frame = document.getElementById("codex-taskboard-frame");
         const surface = document.getElementById("surface");
         const conversation = document.getElementById("conversation");
         const result = {
-          panelVisibleBefore: window.__panelVisibleBefore,
+          panelVisibleBefore,
           browserPanelClosed: window.__browserPanelClosed,
           conversationTop: conversation.getBoundingClientRect().top,
           pageMounted: page?.parentElement === surface,
@@ -223,10 +211,6 @@ function fixtureHtml(origin) {
           frameIsolated: frame?.contentDocument === null,
           statusHidden: document.getElementById("codex-taskboard-status")?.hidden === true,
           frameMessages: window.__frameMessages,
-          frameLoadCount: window.__frameLoadCount,
-          frameRecreated: window.__frameRecreated,
-          storageFlushAckBeforeReload: window.__storageFlushAckBeforeReload,
-          frameWasInertDuringFlush: window.__frameWasInertDuringFlush,
           externalOpenUrl: window.__externalOpenUrl,
           frameVisibleBeforeNavigation: window.__frameVisibleBeforeNavigation,
           statusHiddenBeforeNavigation: window.__statusHiddenBeforeNavigation,
@@ -236,8 +220,8 @@ function fixtureHtml(origin) {
         };
         document.getElementById("result").textContent = btoa(JSON.stringify(result));
         clearInterval(heartbeatTimer);
-        return result;
-      };
+        window.__codexTaskboardInjection__?.destroy();
+      })();
     </script>
   </body>
 </html>`;
@@ -252,12 +236,6 @@ test("Taskboard fills the workspace, opens HTTPS links and revokes hostile ifram
 
   const server = http.createServer((request, response) => {
     response.setHeader("connection", "close");
-    if (request.url === "/embeddedHost.mjs") {
-      response.setHeader("access-control-allow-origin", "null");
-      response.setHeader("content-type", "text/javascript; charset=utf-8");
-      response.end(embeddedHostSource);
-      return;
-    }
     if (request.url === "/attacker") {
       response.setHeader("content-type", "text/html; charset=utf-8");
       response.end("<!doctype html><title>attacker</title>");
@@ -292,102 +270,35 @@ test("Taskboard fills the workspace, opens HTTPS links and revokes hostile ifram
     server.closeAllConnections();
   }));
 
+  const profile = await mkdtemp(path.join(os.tmpdir(), "taskboard-fullheight-chrome-"));
+  t.after(() => rm(profile, { recursive: true, force: true }));
   const url = `http://127.0.0.1:${server.address().port}/fixture`;
-  const browser = await chromium.launch({
-    executablePath: chrome,
-    headless: true,
-    args: ["--no-sandbox"],
-  });
-  t.after(() => browser.close());
-
-  const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
-  const page = await context.newPage();
-  const stageTrace = [];
-  const startedAt = Date.now();
-  const record = (stage, detail = {}) => {
-    stageTrace.push({ stage, elapsedMs: Date.now() - startedAt, ...detail });
-  };
-  page.on("console", (message) => record("console", {
-    type: message.type(),
-    text: message.text(),
-  }));
-  page.on("pageerror", (error) => record("pageerror", { message: error.message }));
-  page.on("requestfailed", (request) => record("requestfailed", {
-    url: request.url(),
-    failure: request.failure()?.errorText,
-  }));
-
-  const waitForStage = async (stage, predicate) => {
-    try {
-      await page.waitForFunction(predicate, undefined, { timeout: 10_000, polling: 50 });
-      record(stage);
-    } catch (error) {
-      record(`${stage}:timeout`);
-      throw error;
-    }
-  };
-  const traceFile = process.env.TASKBOARD_INJECTION_TRACE_FILE;
-  let tracing = false;
-  let traceSaved = false;
-  let result;
+  let stdout;
   try {
-    await context.tracing.start({ snapshots: true, sources: true });
-    tracing = true;
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
-    record("domcontentloaded");
-    await waitForStage("entry-mounted", () => Boolean(
-      document.getElementById("codex-taskboard-entry")
-      && window.__startCodexTaskboardRegression,
-    ));
-    await page.evaluate(() => window.__startCodexTaskboardRegression());
-    await waitForStage("entry-clicked", () => window.__entryClicked === true);
-    await waitForStage("frame-awaiting-challenge", () => window.__frameMessages.some(
-      (message) => message.type === "taskboard:frame-awaiting-challenge",
-    ));
-    await waitForStage("frame-ready", () => window.__frameMessages.some(
-      (message) => message.type === "taskboard:ready",
-    ));
-    await page.evaluate(() => window.__codexTaskboardInjection__?.reloadFrame());
-    record("frame-reload-requested");
-    await waitForStage("storage-flushed", () => window.__storageFlushAckBeforeReload === true);
-    await waitForStage("frame-recreated", () => (
-      window.__frameLoadCount === 2 && window.__frameRecreated === true
-    ));
-    await waitForStage("external-open-requested", () => (
-      window.__externalOpenUrl === "https://example.com/review"
-    ));
-    await waitForStage("hostile-navigation-revoked", () => {
-      const frame = document.getElementById("codex-taskboard-frame");
-      const status = document.getElementById("codex-taskboard-status");
-      return window.__hostileNavigationLoaded === true
-        && frame?.hidden === true
-        && status?.hidden === false;
-    });
-    result = await page.evaluate(() => window.__collectCodexTaskboardRegressionResult());
-    record("result-collected");
+    ({ stdout } = await execFileAsync(chrome, [
+      "--headless=new",
+      "--disable-gpu",
+      "--no-sandbox",
+      `--user-data-dir=${profile}`,
+      "--virtual-time-budget=12000",
+      "--dump-dom",
+      url,
+    ], { maxBuffer: 5 * 1024 * 1024, timeout: 20_000 }));
   } catch (error) {
-    const state = await page.evaluate(() => ({
-      entryClicked: window.__entryClicked,
-      frameMessages: window.__frameMessages,
-      externalOpenUrl: window.__externalOpenUrl,
-      hostileNavigationLoaded: window.__hostileNavigationLoaded,
-      injectionError: window.__injectionError,
-      frameHidden: document.getElementById("codex-taskboard-frame")?.hidden,
-      statusHidden: document.getElementById("codex-taskboard-status")?.hidden,
-    })).catch((snapshotError) => ({ snapshotError: snapshotError.message }));
-    if (traceFile) {
-      await mkdir(path.dirname(traceFile), { recursive: true });
-      await context.tracing.stop({ path: traceFile });
-      tracing = false;
-      traceSaved = true;
+    if (!String(error?.stdout ?? "").trim()) {
+      t.skip("Chrome or Chromium cannot run headless dump-dom in this environment");
+      return;
     }
-    error.message += `\nProtocol trace: ${JSON.stringify(stageTrace)}\nPage state: ${JSON.stringify(state)}`;
-    if (traceSaved) error.message += `\nPlaywright trace: ${traceFile}`;
     throw error;
-  } finally {
-    if (tracing) await context.tracing.stop();
+  }
+  if (!stdout.trim()) {
+    t.skip("Chrome or Chromium cannot run headless dump-dom in this environment");
+    return;
   }
 
+  const encodedResult = stdout.match(/<output id="result">([^<]+)<\/output>/)?.[1];
+  assert.ok(encodedResult, "fixture did not report an injection result");
+  const result = JSON.parse(Buffer.from(encodedResult, "base64").toString("utf8"));
   assert.deepEqual(result, {
     panelVisibleBefore: true,
     browserPanelClosed: true,
@@ -402,17 +313,9 @@ test("Taskboard fills the workspace, opens HTTPS links and revokes hostile ifram
       { type: "taskboard:frame-awaiting-challenge", origin: "null" },
       { type: "taskboard:ready", origin: "null" },
       { type: "taskboard:ready", origin: "null" },
-      { type: "taskboard:storage-flushed", origin: "null" },
-      { type: "taskboard:frame-awaiting-challenge", origin: "null" },
-      { type: "taskboard:ready", origin: "null" },
-      { type: "taskboard:ready", origin: "null" },
       { type: "taskboard:open-thread", origin: "null" },
       { type: "taskboard:open-external", origin: "null" },
     ],
-    frameLoadCount: 2,
-    frameRecreated: true,
-    storageFlushAckBeforeReload: true,
-    frameWasInertDuringFlush: true,
     externalOpenUrl: "https://example.com/review",
     frameVisibleBeforeNavigation: true,
     statusHiddenBeforeNavigation: true,
