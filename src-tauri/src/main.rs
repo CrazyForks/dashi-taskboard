@@ -15,7 +15,11 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tauri::{ActivationPolicy, AppHandle, Emitter, Manager};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    ActivationPolicy, AppHandle, Emitter, Manager,
+};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use uuid::Uuid;
@@ -47,6 +51,7 @@ struct LauncherState {
     child: Mutex<Option<u32>>,
     snapshot: Mutex<LauncherSnapshot>,
     intentional_stop: AtomicBool,
+    update_flow_in_progress: AtomicBool,
     update_in_progress: AtomicBool,
     generation: AtomicU64,
     lifecycle: Mutex<()>,
@@ -76,6 +81,7 @@ impl LauncherState {
                 child_pid: None,
             }),
             intentional_stop: AtomicBool::new(false),
+            update_flow_in_progress: AtomicBool::new(false),
             update_in_progress: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             lifecycle: Mutex::new(()),
@@ -441,12 +447,17 @@ fn start_launcher_locked(
             return;
         }
         thread::sleep(Duration::from_secs(2));
-        if event_state.intentional_stop.load(Ordering::SeqCst)
-            || event_state.generation.load(Ordering::SeqCst) != generation
-        {
-            return;
-        }
-        if let Err(error) = start_launcher(&event_app, &event_state) {
+        let recovery_result = {
+            let _lifecycle = event_state.lifecycle.lock().unwrap();
+            if event_state.generation.load(Ordering::SeqCst) != generation
+                || event_state.intentional_stop.load(Ordering::SeqCst)
+                || event_state.update_in_progress.load(Ordering::SeqCst)
+            {
+                return;
+            }
+            start_launcher_locked(&event_app, &event_state)
+        };
+        if let Err(error) = recovery_result {
             append_log(&event_state, &format!("Launcher recovery failed: {error}"));
             update_snapshot(&event_app, &event_state, |snapshot| {
                 snapshot.phase = "error".into();
@@ -464,6 +475,11 @@ fn start_launcher_locked(
 
 fn start_launcher(app: &AppHandle, state: &Arc<LauncherState>) -> Result<LauncherSnapshot, String> {
     let _lifecycle = state.lifecycle.lock().unwrap();
+    if state.intentional_stop.load(Ordering::SeqCst)
+        || state.update_in_progress.load(Ordering::SeqCst)
+    {
+        return Ok(state.snapshot.lock().unwrap().clone());
+    }
     start_launcher_locked(app, state)
 }
 
@@ -472,12 +488,19 @@ fn restart_launcher(
     state: &Arc<LauncherState>,
 ) -> Result<LauncherSnapshot, String> {
     let _lifecycle = state.lifecycle.lock().unwrap();
+    if state.intentional_stop.load(Ordering::SeqCst) {
+        return Ok(state.snapshot.lock().unwrap().clone());
+    }
     if state.update_in_progress.load(Ordering::SeqCst) {
         append_log(state, "Launcher reopen ignored during update installation");
         return Ok(state.snapshot.lock().unwrap().clone());
     }
     stop_managed_child_locked(app, state);
-    start_launcher_locked(app, state)
+    let result = start_launcher_locked(app, state);
+    if result.is_err() {
+        state.intentional_stop.store(false, Ordering::SeqCst);
+    }
+    result
 }
 
 async fn check_for_startup_update(
@@ -571,6 +594,9 @@ async fn install_update(
     });
     {
         let _lifecycle = state.lifecycle.lock().unwrap();
+        if state.intentional_stop.load(Ordering::SeqCst) {
+            return Err("App exit is in progress".into());
+        }
         state.update_in_progress.store(true, Ordering::SeqCst);
         stop_managed_child_locked(app, state);
     }
@@ -579,6 +605,7 @@ async fn install_update(
         let restart_error = {
             let _lifecycle = state.lifecycle.lock().unwrap();
             let restart_error = start_launcher_locked(app, state).err();
+            state.intentional_stop.store(false, Ordering::SeqCst);
             state.update_in_progress.store(false, Ordering::SeqCst);
             restart_error
         };
@@ -614,15 +641,48 @@ async fn install_update(
     app.restart()
 }
 
-async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
+fn finish_update_flow(state: &LauncherState, check_update: &MenuItem<tauri::Wry>) {
+    state.update_flow_in_progress.store(false, Ordering::SeqCst);
+    check_update.set_enabled(true).unwrap();
+}
+
+async fn offer_update(
+    app: &AppHandle,
+    state: &Arc<LauncherState>,
+    check_update: &MenuItem<tauri::Wry>,
+    show_current_version: bool,
+) {
+    if state
+        .update_flow_in_progress
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
     let update = match check_for_startup_update(app, state).await {
         Ok(update) => update,
         Err(error) => {
-            append_log(state, &format!("Startup update check failed: {error}"));
+            append_log(state, &format!("Update check failed: {error}"));
+            if show_current_version {
+                show_error_dialog(
+                    app,
+                    "Codex Taskboard 更新检查失败",
+                    &format!("无法检查更新。请稍后重试。\n\n{error}"),
+                );
+            }
+            finish_update_flow(state, check_update);
             return;
         }
     };
     let Some(update) = update else {
+        if show_current_version {
+            app.dialog()
+                .message("当前已是最新版本。")
+                .title("Codex Taskboard 更新")
+                .buttons(MessageDialogButtons::Ok)
+                .blocking_show();
+        }
+        finish_update_flow(state, check_update);
         return;
     };
 
@@ -641,14 +701,12 @@ async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
         .blocking_show();
     if !install_now {
         append_log(state, &format!("Update {version} deferred by user"));
+        finish_update_flow(state, check_update);
         return;
     }
     append_log(state, &format!("Update {version} accepted by user"));
     if let Err(error) = install_update(app, state, update).await {
-        append_log(
-            state,
-            &format!("Startup update installation failed: {error}"),
-        );
+        append_log(state, &format!("Update installation failed: {error}"));
         let service_recovered = state.snapshot.lock().unwrap().child_pid.is_some();
         let service_message = if service_recovered {
             "任务面板服务已恢复。"
@@ -660,11 +718,13 @@ async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
             "Codex Taskboard 更新失败",
             &format!("更新未完成。{service_message}\n\n请稍后重试。详情见启动日志。\n\n{error}"),
         );
+        finish_update_flow(state, check_update);
     }
 }
 
 fn main() {
     let app = tauri::Builder::default()
+        .enable_macos_default_menu(false)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
@@ -697,7 +757,68 @@ fn main() {
             ));
             app.manage(state.clone());
 
+            let check_update =
+                MenuItem::with_id(app, "check-update", "检查更新", false, None::<&str>)?;
+            let restart_codex =
+                MenuItem::with_id(app, "restart-codex", "重新启动 Codex", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&check_update, &restart_codex, &quit])?;
+            let check_update_menu = check_update.clone();
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("Codex Taskboard")
+                .menu(&tray_menu)
+                .on_menu_event(move |app, event| match event.id().as_ref() {
+                    "check-update" => {
+                        let Some(state) = app.try_state::<Arc<LauncherState>>() else {
+                            return;
+                        };
+                        check_update_menu.set_enabled(false).unwrap();
+                        let state = Arc::clone(state.inner());
+                        let app = app.clone();
+                        let check_update = check_update_menu.clone();
+                        tauri::async_runtime::spawn(async move {
+                            offer_update(&app, &state, &check_update, true).await;
+                        });
+                    }
+                    "restart-codex" => {
+                        let Some(state) = app.try_state::<Arc<LauncherState>>() else {
+                            return;
+                        };
+                        let state = Arc::clone(state.inner());
+                        let app = app.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            if let Err(error) = restart_launcher(&app, &state) {
+                                append_log(
+                                    &state,
+                                    &format!("Launcher menu restart failed: {error}"),
+                                );
+                                show_error_dialog(
+                                    &app,
+                                    "Codex Taskboard 启动失败",
+                                    &format!("{error}\n\n请确认官方 Codex/ChatGPT App 已安装。"),
+                                );
+                            }
+                        });
+                    }
+                    "quit" => {
+                        let Some(state) = app.try_state::<Arc<LauncherState>>() else {
+                            return;
+                        };
+                        let lifecycle = state.lifecycle.lock().unwrap();
+                        if state.update_in_progress.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        stop_managed_child_locked(app, &state);
+                        drop(lifecycle);
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .build(app)?;
+
             let app_handle = app.handle().clone();
+            let startup_check_update = check_update.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = start_launcher(&app_handle, &state) {
                     append_log(&state, &format!("Launcher startup failed: {error}"));
@@ -713,7 +834,7 @@ fn main() {
                         ),
                     );
                 }
-                offer_startup_update(&app_handle, &state).await;
+                offer_update(&app_handle, &state, &startup_check_update, false).await;
             });
             Ok(())
         })
@@ -735,9 +856,16 @@ fn main() {
                 );
             }
         }
-        tauri::RunEvent::ExitRequested { .. } => {
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
             if let Some(state) = app_handle.try_state::<Arc<LauncherState>>() {
-                stop_managed_child(app_handle, &state);
+                let _lifecycle = state.lifecycle.lock().unwrap();
+                if code != Some(tauri::RESTART_EXIT_CODE)
+                    && state.update_in_progress.load(Ordering::SeqCst)
+                {
+                    api.prevent_exit();
+                    return;
+                }
+                stop_managed_child_locked(app_handle, &state);
             }
         }
         tauri::RunEvent::Exit => {
