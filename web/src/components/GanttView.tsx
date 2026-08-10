@@ -303,8 +303,7 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
       const nextGridWidth = Math.round(Math.max(300, Math.min(460, width * ratio)));
       expandedGridWidthRef.current = nextGridWidth;
       setGridWidth(nextGridWidth);
-      if (gridCollapsedRef.current) return;
-      instance.config.grid_width = nextGridWidth;
+      if (!gridCollapsedRef.current) instance.config.grid_width = nextGridWidth;
       instance.setSizes();
     });
     resizeObserver.observe(container);
