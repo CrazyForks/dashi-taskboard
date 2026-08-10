@@ -7,6 +7,7 @@ import {
   buildTaskboardAutomationSpec,
   parseTaskboardAutomationHostRequest,
   reconcileTaskboardAutomation,
+  taskboardAutomationPolicyOperation,
 } from "../shared/taskboard-automation.mjs";
 import {
   AUTOMATION_MODELS,
@@ -212,10 +213,54 @@ test("the generated cron spec uses the selected whitelisted local Codex options"
   });
 });
 
+test("passive policy checks resume only after quota recovery", () => {
+  const passiveAvailable = {
+    explicit: false,
+    previousQuotaState: "available",
+    quotaState: "available",
+    currentStatus: "PAUSED",
+  };
+  assert.equal(
+    taskboardAutomationPolicyOperation(
+      { ...baseRequest, quotaAware: true },
+      passiveAvailable,
+    ),
+    "list",
+  );
+  assert.equal(
+    taskboardAutomationPolicyOperation(
+      { ...baseRequest, quotaAware: true },
+      { ...passiveAvailable, quotaState: "unknown" },
+    ),
+    "list",
+  );
+  assert.equal(
+    taskboardAutomationPolicyOperation(
+      { ...baseRequest, quotaAware: true },
+      { ...passiveAvailable, previousQuotaState: "blocked" },
+    ),
+    "ensure-active",
+  );
+  assert.equal(
+    taskboardAutomationPolicyOperation(
+      { ...baseRequest, quotaAware: true },
+      { ...passiveAvailable, explicit: true },
+    ),
+    "ensure-active",
+  );
+  assert.equal(
+    taskboardAutomationPolicyOperation(
+      { ...baseRequest, quotaAware: false },
+      { ...passiveAvailable, currentStatus: "ACTIVE" },
+    ),
+    "ensure-active",
+  );
+});
+
 test("ensure-active updates a matching automation by id with a complete active spec", async () => {
   const existing = {
     id: "automation-1",
-    status: "PAUSED",
+    status: "ACTIVE",
     kind: "cron",
     name: "Taskboard 自动认领 · ppt-skill",
     prompt: "old prompt",
