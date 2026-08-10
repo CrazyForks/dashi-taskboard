@@ -447,12 +447,17 @@ fn start_launcher_locked(
             return;
         }
         thread::sleep(Duration::from_secs(2));
-        if event_state.intentional_stop.load(Ordering::SeqCst)
-            || event_state.generation.load(Ordering::SeqCst) != generation
-        {
-            return;
-        }
-        if let Err(error) = start_launcher(&event_app, &event_state) {
+        let recovery_result = {
+            let _lifecycle = event_state.lifecycle.lock().unwrap();
+            if event_state.generation.load(Ordering::SeqCst) != generation
+                || event_state.intentional_stop.load(Ordering::SeqCst)
+                || event_state.update_in_progress.load(Ordering::SeqCst)
+            {
+                return;
+            }
+            start_launcher_locked(&event_app, &event_state)
+        };
+        if let Err(error) = recovery_result {
             append_log(&event_state, &format!("Launcher recovery failed: {error}"));
             update_snapshot(&event_app, &event_state, |snapshot| {
                 snapshot.phase = "error".into();
@@ -470,6 +475,11 @@ fn start_launcher_locked(
 
 fn start_launcher(app: &AppHandle, state: &Arc<LauncherState>) -> Result<LauncherSnapshot, String> {
     let _lifecycle = state.lifecycle.lock().unwrap();
+    if state.intentional_stop.load(Ordering::SeqCst)
+        || state.update_in_progress.load(Ordering::SeqCst)
+    {
+        return Ok(state.snapshot.lock().unwrap().clone());
+    }
     start_launcher_locked(app, state)
 }
 
@@ -478,6 +488,9 @@ fn restart_launcher(
     state: &Arc<LauncherState>,
 ) -> Result<LauncherSnapshot, String> {
     let _lifecycle = state.lifecycle.lock().unwrap();
+    if state.intentional_stop.load(Ordering::SeqCst) {
+        return Ok(state.snapshot.lock().unwrap().clone());
+    }
     if state.update_in_progress.load(Ordering::SeqCst) {
         append_log(state, "Launcher reopen ignored during update installation");
         return Ok(state.snapshot.lock().unwrap().clone());
