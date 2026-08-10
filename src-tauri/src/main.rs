@@ -15,7 +15,11 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use tauri::{ActivationPolicy, AppHandle, Emitter, Manager};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    ActivationPolicy, AppHandle, Emitter, Manager,
+};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use uuid::Uuid;
@@ -614,15 +618,29 @@ async fn install_update(
     app.restart()
 }
 
-async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
+async fn offer_update(app: &AppHandle, state: &Arc<LauncherState>, show_current_version: bool) {
     let update = match check_for_startup_update(app, state).await {
         Ok(update) => update,
         Err(error) => {
-            append_log(state, &format!("Startup update check failed: {error}"));
+            append_log(state, &format!("Update check failed: {error}"));
+            if show_current_version {
+                show_error_dialog(
+                    app,
+                    "Codex Taskboard 更新检查失败",
+                    &format!("无法检查更新。请稍后重试。\n\n{error}"),
+                );
+            }
             return;
         }
     };
     let Some(update) = update else {
+        if show_current_version {
+            app.dialog()
+                .message("当前已是最新版本。")
+                .title("Codex Taskboard 更新")
+                .buttons(MessageDialogButtons::Ok)
+                .blocking_show();
+        }
         return;
     };
 
@@ -645,10 +663,7 @@ async fn offer_startup_update(app: &AppHandle, state: &Arc<LauncherState>) {
     }
     append_log(state, &format!("Update {version} accepted by user"));
     if let Err(error) = install_update(app, state, update).await {
-        append_log(
-            state,
-            &format!("Startup update installation failed: {error}"),
-        );
+        append_log(state, &format!("Update installation failed: {error}"));
         let service_recovered = state.snapshot.lock().unwrap().child_pid.is_some();
         let service_message = if service_recovered {
             "任务面板服务已恢复。"
@@ -697,6 +712,52 @@ fn main() {
             ));
             app.manage(state.clone());
 
+            let check_update =
+                MenuItem::with_id(app, "check-update", "检查更新", true, None::<&str>)?;
+            let restart_codex =
+                MenuItem::with_id(app, "restart-codex", "重新启动 Codex", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&check_update, &restart_codex, &quit])?;
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("Codex Taskboard")
+                .menu(&tray_menu)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "check-update" => {
+                        let Some(state) = app.try_state::<Arc<LauncherState>>() else {
+                            return;
+                        };
+                        let state = Arc::clone(state.inner());
+                        let app = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            offer_update(&app, &state, true).await;
+                        });
+                    }
+                    "restart-codex" => {
+                        let Some(state) = app.try_state::<Arc<LauncherState>>() else {
+                            return;
+                        };
+                        let state = Arc::clone(state.inner());
+                        let app = app.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            if let Err(error) = restart_launcher(&app, &state) {
+                                append_log(
+                                    &state,
+                                    &format!("Launcher menu restart failed: {error}"),
+                                );
+                                show_error_dialog(
+                                    &app,
+                                    "Codex Taskboard 启动失败",
+                                    &format!("{error}\n\n请确认官方 Codex/ChatGPT App 已安装。"),
+                                );
+                            }
+                        });
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .build(app)?;
+
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = start_launcher(&app_handle, &state) {
@@ -713,7 +774,7 @@ fn main() {
                         ),
                     );
                 }
-                offer_startup_update(&app_handle, &state).await;
+                offer_update(&app_handle, &state, false).await;
             });
             Ok(())
         })
