@@ -465,7 +465,31 @@ test("permanent task deletion requires archiving and cleans D1 and R2", async ()
     },
     body: "attachment",
   });
-  assert.ok((await cloud.listAttachmentKeys()).includes(uploaded.body.attachment.id));
+  assert.equal(uploaded.response.status, 201);
+  const comment = await cloud.request(`/api/tasks/${task.id}/comments`, {
+    method: "POST",
+    actorName: alice,
+    json: { body: "Comment with attachment" },
+  });
+  assert.equal(comment.response.status, 201);
+  const commentUpload = await cloud.request(
+    `/api/comments/${comment.body.comment.id}/attachments`,
+    {
+      method: "POST",
+      actorName: alice,
+      headers: {
+        "content-type": "text/plain",
+        "x-taskboard-filename": "comment-evidence.txt",
+      },
+      body: "comment attachment",
+    },
+  );
+  assert.equal(commentUpload.response.status, 201);
+  const attachmentIds = [uploaded.body.attachment.id, commentUpload.body.attachment.id];
+  const keysAfterUpload = await cloud.listAttachmentKeys();
+  for (const attachmentId of attachmentIds) {
+    assert.ok(keysAfterUpload.includes(attachmentId));
+  }
 
   const activeDelete = await cloud.request(`/api/tasks/${task.id}`, {
     method: "DELETE",
@@ -488,6 +512,19 @@ test("permanent task deletion requires archiving and cleans D1 and R2", async ()
   assert.equal(deleted.response.status, 204);
   assert.deepEqual(await cloud.listAttachmentKeys(), keysBefore);
   assert.equal((await cloud.request(`/api/tasks/${task.id}`, { actorName: alice })).response.status, 404);
+  assert.equal(
+    await cloud.db.prepare("SELECT 1 FROM tasks WHERE id = ?").bind(task.id).first(),
+    null,
+  );
+  assert.equal(
+    await cloud.db.prepare("SELECT 1 FROM comments WHERE id = ?")
+      .bind(comment.body.comment.id).first(),
+    null,
+  );
+  const remainingAttachments = await cloud.db.prepare(`
+    SELECT id FROM attachments WHERE id IN (?, ?)
+  `).bind(...attachmentIds).all();
+  assert.deepEqual(remainingAttachments.results, []);
   assert.equal((await cloud.request("/api/projects/temp-cloud-delete", {
     method: "DELETE",
     actorName: alice,

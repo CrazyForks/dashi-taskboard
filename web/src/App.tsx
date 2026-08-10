@@ -2756,7 +2756,7 @@ export function App() {
               <>
                 <h2 id="project-delete-title">无法删除项目“{pendingProjectDelete.name}”</h2>
                 <p>
-                  该项目还有 {projectDeleteIssueCount} 个议题（包含已归档议题）。请先将议题归档，并在已归档列表中永久删除。
+                  该项目还有 {projectDeleteIssueCount} 个议题（包含已归档议题）。请先移动或删除这些议题。
                 </p>
                 <div>
                   <button className="button primary" type="button" onClick={closeProjectDeleteDialog}>

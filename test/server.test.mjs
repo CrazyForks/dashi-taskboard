@@ -1798,11 +1798,31 @@ test("permanent task deletion requires archiving and removes attachment files", 
     },
     body: "attachment",
   });
-  const storagePath = path.join(
-    runningApps.at(-1).app.options.attachmentsDirectory,
-    uploaded.body.attachment.id,
+  assert.equal(uploaded.response.status, 201);
+  const comment = await request(baseUrl, `/api/tasks/${task.id}/comments`, {
+    method: "POST",
+    body: { body: "Comment with attachment" },
+  });
+  assert.equal(comment.response.status, 201);
+  const commentUpload = await request(
+    baseUrl,
+    `/api/comments/${comment.body.comment.id}/attachments`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "text/plain",
+        "x-taskboard-filename": "comment-evidence.txt",
+      },
+      body: "comment attachment",
+    },
   );
-  await access(storagePath);
+  assert.equal(commentUpload.response.status, 201);
+  const attachmentIds = [uploaded.body.attachment.id, commentUpload.body.attachment.id];
+  const storagePaths = attachmentIds.map((attachmentId) => path.join(
+    runningApps.at(-1).app.options.attachmentsDirectory,
+    attachmentId,
+  ));
+  await Promise.all(storagePaths.map((storagePath) => access(storagePath)));
 
   const activeDelete = await request(baseUrl, `/api/tasks/${task.id}`, {
     method: "DELETE",
@@ -1820,8 +1840,20 @@ test("permanent task deletion requires archiving and removes attachment files", 
     body: { version: archived.body.task.version },
   });
   assert.equal(deleted.response.status, 204);
-  await assert.rejects(access(storagePath), { code: "ENOENT" });
+  await Promise.all(storagePaths.map((storagePath) => (
+    assert.rejects(access(storagePath), { code: "ENOENT" })
+  )));
   assert.equal((await request(baseUrl, `/api/tasks/${task.id}`)).response.status, 404);
+  const database = runningApps.at(-1).app.database.database;
+  assert.equal(database.prepare("SELECT 1 FROM tasks WHERE id = ?").get(task.id), undefined);
+  assert.equal(
+    database.prepare("SELECT 1 FROM comments WHERE id = ?").get(comment.body.comment.id),
+    undefined,
+  );
+  const attachmentExists = database.prepare("SELECT 1 FROM attachments WHERE id = ?");
+  for (const attachmentId of attachmentIds) {
+    assert.equal(attachmentExists.get(attachmentId), undefined);
+  }
   assert.equal((await request(baseUrl, "/api/projects/temp-delete-project", {
     method: "DELETE",
   })).response.status, 204);

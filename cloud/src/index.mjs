@@ -1699,18 +1699,19 @@ async function deleteArchivedTask(env, id, expectedVersion) {
   if (current.archived_at === null) {
     throw new ApiError(409, "TASK_NOT_ARCHIVED", "Only archived tasks can be deleted");
   }
-  const attachmentIds = (await all(
+  const results = await env.DB.batch([
     env.DB.prepare("SELECT id FROM attachments WHERE task_id = ?").bind(current.id),
-  )).map((attachment) => attachment.id);
-  const result = await env.DB.prepare(`
-    DELETE FROM tasks
-    WHERE id = ? AND version = ? AND archived_at IS NOT NULL
-  `).bind(current.id, expectedVersion).run();
-  if (!changed(result)) {
+    env.DB.prepare(`
+      DELETE FROM tasks
+      WHERE id = ? AND version = ? AND archived_at IS NOT NULL
+    `).bind(current.id, expectedVersion),
+  ]);
+  if (!changed(results[1])) {
     const latest = await requireTaskRow(env, current.id);
     assertTaskVersion(latest, expectedVersion);
     throw new ApiError(409, "TASK_NOT_ARCHIVED", "Only archived tasks can be deleted");
   }
+  const attachmentIds = results[0].results.map((attachment) => attachment.id);
   await Promise.all(attachmentIds.map((attachmentId) => env.ATTACHMENTS.delete(attachmentId)));
 }
 
