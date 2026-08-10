@@ -933,7 +933,8 @@ export function App() {
       const policy = isAutomationHostPolicy(response.policy) ? response.policy : null;
       if (!stored) {
         if (!policy) return;
-        const item = items.find((candidate) => candidate.id === policy.automationId)
+        const item = (isAutomationHostItem(response.item) ? response.item : undefined)
+          ?? items.find((candidate) => candidate.id === policy.automationId)
           ?? (items.length === 1 ? items[0] : undefined);
         writeProjectAutomation(selectedProjectId, {
           automationId: item?.id ?? policy.automationId,

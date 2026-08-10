@@ -104,7 +104,7 @@ export function taskboardAutomationPolicyOperation(request, {
     || currentStatus === undefined
     || (request.quotaAware && previousQuotaState !== "available")
   ) return "ensure-active";
-  return "list";
+  return "ensure-active";
 }
 
 export async function reconcileTaskboardAutomation(request, rpc) {

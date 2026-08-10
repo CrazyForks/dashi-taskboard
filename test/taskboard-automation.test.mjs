@@ -248,12 +248,19 @@ test("passive policy checks resume only after quota recovery", () => {
     ),
     "ensure-active",
   );
+  assert.equal(
+    taskboardAutomationPolicyOperation(
+      { ...baseRequest, quotaAware: false },
+      { ...passiveAvailable, currentStatus: "ACTIVE" },
+    ),
+    "ensure-active",
+  );
 });
 
 test("ensure-active updates a matching automation by id with a complete active spec", async () => {
   const existing = {
     id: "automation-1",
-    status: "PAUSED",
+    status: "ACTIVE",
     kind: "cron",
     name: "Taskboard 自动认领 · ppt-skill",
     prompt: "old prompt",
