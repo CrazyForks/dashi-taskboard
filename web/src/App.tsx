@@ -2445,7 +2445,15 @@ export function App() {
               />
               {!search && <kbd>/</kbd>}
               {search && (
-                <button className="search-clear" type="button" aria-label="清除搜索" onClick={() => setSearch("")}>
+                <button
+                  className="search-clear"
+                  type="button"
+                  aria-label="清除搜索"
+                  onClick={() => {
+                    setSearch("");
+                    document.getElementById("task-search")?.focus();
+                  }}
+                >
                   <LinearIcon name="close" />
                 </button>
               )}
