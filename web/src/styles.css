@@ -9052,7 +9052,7 @@ kbd {
   left: -20px;
   width: 16px;
   height: 16px;
-  background: center / 16px 16px no-repeat url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAOdEVYdFNvZnR3YXJlAEZpZ21hnrGWYwAAAG5JREFUeAHdk8EJwCAMRU1XcP+jDuFKmhlSk5PamBK8lD4Q+WAefEWgTjjgCod8UICIobW2za8CppQyDa15ghT6YUopUa1VzSOqwCMxLxEAZO2yWSHnLLuWzQqeYQbEMsDPxsQY1fyouQq8/OAv3E4DGh/Tdlf8AAAAAElFTkSuQmCC");
+  background: center / 16px 16px no-repeat url("./assets/figma-taskboard/column-flow-arrow.svg");
   content: "";
   pointer-events: none;
 }
@@ -9230,6 +9230,7 @@ kbd {
 .task-card-media {
   display: block;
   width: 100%;
+  max-width: 100%;
   padding: 0;
   overflow: hidden;
   border: 1px solid rgba(0, 0, 0, .05);
@@ -9247,7 +9248,7 @@ kbd {
 }
 
 .task-card-media.is-clamped {
-  aspect-ratio: 3 / 4;
+  height: 300px;
 }
 
 .task-card-media.is-clamped img {

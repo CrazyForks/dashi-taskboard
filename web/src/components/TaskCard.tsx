@@ -83,16 +83,26 @@ function firstTaskImage(task: Task) {
 }
 
 function TaskCardMedia({ src }: { src: string }) {
-  const [clamped, setClamped] = useState(false);
+  const [presentation, setPresentation] = useState<{ width: number; clamped: boolean } | null>(null);
+  const clamped = presentation?.clamped ?? false;
 
   return (
-    <div className={`task-card-media${clamped ? " is-clamped" : ""}`}>
+    <div
+      className={`task-card-media${clamped ? " is-clamped" : ""}`}
+      style={presentation ? { width: presentation.width } : undefined}
+    >
       <img
         src={src}
         alt=""
         loading="lazy"
         onLoad={(event) => {
-          setClamped(event.currentTarget.naturalWidth / event.currentTarget.naturalHeight < 3 / 4);
+          const { naturalWidth, naturalHeight } = event.currentTarget;
+          const availableWidth = event.currentTarget.parentElement?.clientWidth ?? naturalWidth;
+          const renderedWidth = Math.min(naturalWidth, availableWidth);
+          setPresentation({
+            width: naturalWidth,
+            clamped: naturalHeight * renderedWidth / naturalWidth > 300,
+          });
         }}
       />
     </div>
