@@ -1332,7 +1332,6 @@ async function createTask(env, input, actor) {
   const project = await env.DB.prepare(`
     SELECT
       projects.id,
-      projects.next_task_number,
       (
         SELECT tasks.identifier
         FROM tasks
@@ -1350,16 +1349,6 @@ async function createTask(env, input, actor) {
     ? project.first_identifier.replace(/-\d+$/, "")
     : projectPrefix(project.id);
   const suffixStart = prefix.length + 2;
-  const maximum = await env.DB.prepare(`
-    SELECT MAX(CAST(substr(identifier, ?) AS INTEGER)) AS number
-    FROM tasks
-    WHERE identifier GLOB ?
-  `).bind(suffixStart, `${prefix}-[0-9]*`).first();
-  const number = Math.max(
-    project.next_task_number,
-    maximum.number === null ? 1 : maximum.number + 1,
-  );
-  const identifier = `${prefix}-${number}`;
   let sortOrder = input.sortOrder;
   if (sortOrder === undefined) {
     const row = await env.DB.prepare(`
@@ -1384,7 +1373,14 @@ async function createTask(env, input, actor) {
       )
       SELECT
         ?,
-        ?,
+        ? || '-' || CAST(MAX(
+          projects.next_task_number,
+          COALESCE((
+            SELECT MAX(CAST(substr(tasks.identifier, ?) AS INTEGER)) + 1
+            FROM tasks
+            WHERE tasks.identifier GLOB ?
+          ), 1)
+        ) AS TEXT),
         projects.id,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
@@ -1393,7 +1389,9 @@ async function createTask(env, input, actor) {
       WHERE projects.id = ?
     `).bind(
       id,
-      identifier,
+      prefix,
+      suffixStart,
+      `${prefix}-[0-9]*`,
       input.title,
       input.description,
       input.status,
@@ -1422,9 +1420,15 @@ async function createTask(env, input, actor) {
     ),
     env.DB.prepare(`
       UPDATE projects
-      SET next_task_number = ?, updated_at = ?
+      SET
+        next_task_number = (
+          SELECT CAST(substr(identifier, ?) AS INTEGER) + 1
+          FROM tasks
+          WHERE id = ?
+        ),
+        updated_at = ?
       WHERE id = ?
-    `).bind(number + 1, timestamp, input.projectId),
+    `).bind(suffixStart, id, timestamp, input.projectId),
   ]);
   if (!changed(results[0]) || !changed(results[1])) {
     throw new ApiError(
