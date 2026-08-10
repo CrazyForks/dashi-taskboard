@@ -1069,6 +1069,31 @@ kbd {
   color: var(--text-tertiary);
 }
 
+.search-field input::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.search-clear {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.search-clear svg {
+  width: 10px;
+  height: 10px;
+}
+
 .search-icon,
 .filter-icon {
   position: absolute;

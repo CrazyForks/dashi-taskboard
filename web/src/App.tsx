@@ -2433,18 +2433,23 @@ export function App() {
             )}
           </div>
           {(boardView === "issues" || boardView === "list" || boardView === "gantt") && <div className="toolbar-tools">
-            <label className={`search-field${search ? " has-value" : ""}`} title="搜索议题 (/)" >
+            <div className={`search-field${search ? " has-value" : ""}`} title="搜索议题 (/)" >
               <TaskboardIcon className="search-icon" name="search" />
-              <span className="sr-only">搜索议题</span>
               <input
                 id="task-search"
                 type="search"
+                aria-label="搜索议题"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="搜索议题…"
               />
               {!search && <kbd>/</kbd>}
-            </label>
+              {search && (
+                <button className="search-clear" type="button" aria-label="清除搜索" onClick={() => setSearch("")}>
+                  <LinearIcon name="close" />
+                </button>
+              )}
+            </div>
             {boardView === "gantt" && (
               <div className="gantt-toolbar-controls">
                 <label className="gantt-hide-completed">
