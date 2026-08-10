@@ -703,6 +703,7 @@ async fn offer_update(
 
 fn main() {
     let app = tauri::Builder::default()
+        .enable_macos_default_menu(false)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
