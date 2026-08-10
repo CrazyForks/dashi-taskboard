@@ -925,17 +925,18 @@ export function App() {
         ...DEFAULT_AUTOMATION_OPTIONS,
       };
       const response = await sendAutomationRequest(
-        stored ? "apply-policy" : "list",
+        "list",
         options,
         stored?.automationId,
       );
       const items = Array.isArray(response.items)
         ? response.items.filter(isAutomationHostItem)
         : [];
+      const policy = isAutomationHostPolicy(response.policy) ? response.policy : null;
       if (!stored) {
-        const policy = isAutomationHostPolicy(response.policy) ? response.policy : null;
         if (!policy) return;
-        const item = items.find((candidate) => candidate.id === policy.automationId)
+        const item = (isAutomationHostItem(response.item) ? response.item : undefined)
+          ?? items.find((candidate) => candidate.id === policy.automationId)
           ?? (items.length === 1 ? items[0] : undefined);
         writeProjectAutomation(selectedProjectId, {
           automationId: item?.id ?? policy.automationId,
@@ -943,6 +944,7 @@ export function App() {
           status: item?.status ?? "PAUSED",
           enabledByUser: policy.enabledByUser,
           quotaAware: policy.quotaAware,
+          ...(response.quota ? { quota: response.quota } : {}),
           intervalMinutes: policy.intervalMinutes,
           model: policy.model,
           reasoningEffort: policy.reasoningEffort,
@@ -958,6 +960,8 @@ export function App() {
             ...stored,
             automationId: undefined,
             status: "PAUSED",
+            enabledByUser: policy?.enabledByUser ?? stored.enabledByUser,
+            quotaAware: policy?.quotaAware ?? stored.quotaAware,
             ...(response.quota ? { quota: response.quota } : {}),
           });
         }
@@ -969,9 +973,15 @@ export function App() {
         automationId: item.id,
         codexProjectId: automationProjectContext.codexProjectId,
         status: item.status,
-        enabledByUser: stored.enabledByUser,
-        quotaAware: stored.quotaAware,
-        ...(response.quota ? { quota: response.quota } : {}),
+        enabledByUser: policy?.enabledByUser ?? stored.enabledByUser,
+        quotaAware: policy?.quotaAware ?? stored.quotaAware,
+        ...(
+          response.quota
+            ? { quota: response.quota }
+            : stored.quota
+              ? { quota: stored.quota }
+              : {}
+        ),
         intervalMinutes,
         model: item.model,
         reasoningEffort: item.reasoningEffort,
