@@ -303,7 +303,11 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
       container.removeEventListener("pointermove", handlePointerMove);
       container.removeEventListener("pointerleave", handlePointerLeave);
       ganttRef.current = null;
-      instance.destructor();
+      try {
+        instance.destructor();
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "SecurityError")) throw error;
+      }
     };
   }, []);
 
