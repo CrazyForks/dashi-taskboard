@@ -86,6 +86,27 @@ export function buildTaskboardAutomationSpec(request) {
   };
 }
 
+export function taskboardAutomationPolicyOperation(request, {
+  explicit,
+  previousQuotaState,
+  quotaState,
+  currentStatus,
+}) {
+  if (!request.enabledByUser) return "pause";
+  if (
+    !explicit
+    && currentStatus === "PAUSED"
+    && (!request.quotaAware || previousQuotaState === "available")
+  ) return "list";
+  if (request.quotaAware && quotaState !== "available") return "pause";
+  if (
+    explicit
+    || currentStatus === undefined
+    || (request.quotaAware && previousQuotaState !== "available")
+  ) return "ensure-active";
+  return "list";
+}
+
 export async function reconcileTaskboardAutomation(request, rpc) {
   const listed = await rpc("list-automations", {});
   const items = Array.isArray(listed?.items) ? listed.items : [];
