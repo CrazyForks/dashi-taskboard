@@ -1632,6 +1632,11 @@ export function createTaskboardServer(options = {}) {
     try {
       const incomingUrl = new URL(request.url, "http://127.0.0.1");
       if (resolved.instanceToken && incomingUrl.pathname !== "/health") {
+        if (incomingUrl.pathname === routePrefix) {
+          response.writeHead(301, { location: `${incomingUrl.pathname}/${incomingUrl.search}` });
+          response.end();
+          return;
+        }
         if (
           incomingUrl.pathname !== routePrefix
           && !incomingUrl.pathname.startsWith(`${routePrefix}/`)
