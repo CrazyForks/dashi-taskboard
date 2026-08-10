@@ -577,6 +577,9 @@ async fn install_update(
     });
     {
         let _lifecycle = state.lifecycle.lock().unwrap();
+        if state.intentional_stop.load(Ordering::SeqCst) {
+            return Err("App exit is in progress".into());
+        }
         state.update_in_progress.store(true, Ordering::SeqCst);
         stop_managed_child_locked(app, state);
     }
@@ -784,9 +787,13 @@ fn main() {
                         let Some(state) = app.try_state::<Arc<LauncherState>>() else {
                             return;
                         };
-                        if !state.update_in_progress.load(Ordering::SeqCst) {
-                            app.exit(0);
+                        let lifecycle = state.lifecycle.lock().unwrap();
+                        if state.update_in_progress.load(Ordering::SeqCst) {
+                            return;
                         }
+                        stop_managed_child_locked(app, &state);
+                        drop(lifecycle);
+                        app.exit(0);
                     }
                     _ => {}
                 })
@@ -831,9 +838,16 @@ fn main() {
                 );
             }
         }
-        tauri::RunEvent::ExitRequested { .. } => {
+        tauri::RunEvent::ExitRequested { code, api, .. } => {
             if let Some(state) = app_handle.try_state::<Arc<LauncherState>>() {
-                stop_managed_child(app_handle, &state);
+                let _lifecycle = state.lifecycle.lock().unwrap();
+                if code != Some(tauri::RESTART_EXIT_CODE)
+                    && state.update_in_progress.load(Ordering::SeqCst)
+                {
+                    api.prevent_exit();
+                    return;
+                }
+                stop_managed_child_locked(app_handle, &state);
             }
         }
         tauri::RunEvent::Exit => {
