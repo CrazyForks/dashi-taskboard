@@ -1329,7 +1329,26 @@ async function listTasks(env, filters) {
 }
 
 async function createTask(env, input, actor) {
-  await requireProject(env, input.projectId);
+  const project = await env.DB.prepare(`
+    SELECT
+      projects.id,
+      (
+        SELECT tasks.identifier
+        FROM tasks
+        WHERE tasks.project_id = projects.id
+        ORDER BY tasks.created_at, tasks.id
+        LIMIT 1
+      ) AS first_identifier
+    FROM projects
+    WHERE projects.id = ?
+  `).bind(input.projectId).first();
+  if (!project) {
+    throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${input.projectId}' does not exist`);
+  }
+  const prefix = project.first_identifier
+    ? project.first_identifier.replace(/-\d+$/, "")
+    : projectPrefix(project.id);
+  const suffixStart = prefix.length + 2;
   let sortOrder = input.sortOrder;
   if (sortOrder === undefined) {
     const row = await env.DB.prepare(`
@@ -1354,7 +1373,14 @@ async function createTask(env, input, actor) {
       )
       SELECT
         ?,
-        ? || '-' || CAST(next_task_number AS TEXT),
+        ? || '-' || CAST(MAX(
+          projects.next_task_number,
+          COALESCE((
+            SELECT MAX(CAST(substr(tasks.identifier, ?) AS INTEGER)) + 1
+            FROM tasks
+            WHERE tasks.identifier GLOB ?
+          ), 1)
+        ) AS TEXT),
         projects.id,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
@@ -1363,7 +1389,9 @@ async function createTask(env, input, actor) {
       WHERE projects.id = ?
     `).bind(
       id,
-      projectPrefix(input.projectId),
+      prefix,
+      suffixStart,
+      `${prefix}-[0-9]*`,
       input.title,
       input.description,
       input.status,
@@ -1392,9 +1420,15 @@ async function createTask(env, input, actor) {
     ),
     env.DB.prepare(`
       UPDATE projects
-      SET next_task_number = next_task_number + 1, updated_at = ?
+      SET
+        next_task_number = (
+          SELECT CAST(substr(identifier, ?) AS INTEGER) + 1
+          FROM tasks
+          WHERE id = ?
+        ),
+        updated_at = ?
       WHERE id = ?
-    `).bind(timestamp, input.projectId),
+    `).bind(suffixStart, id, timestamp, input.projectId),
   ]);
   if (!changed(results[0]) || !changed(results[1])) {
     throw new ApiError(
