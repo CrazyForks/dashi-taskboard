@@ -282,7 +282,18 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
       setLinkedHoverTask(taskId);
     };
     const handlePointerLeave = () => setLinkedHoverTask(null);
-    instance.init(container);
+    const originalEvent = instance.event;
+    instance.event = (...args) => {
+      const [target, eventName] = args;
+      const resizeWatcherWindow = container.querySelector<HTMLIFrameElement>("iframe.gantt_container_resize_watcher")?.contentWindow;
+      if (eventName === "resize" && Object.is(target, resizeWatcherWindow)) return;
+      originalEvent(...args);
+    };
+    try {
+      instance.init(container);
+    } finally {
+      instance.event = originalEvent;
+    }
     container.addEventListener("pointermove", handlePointerMove);
     container.addEventListener("pointerleave", handlePointerLeave);
     const markerFrame = requestAnimationFrame(updateOverlays);
@@ -303,11 +314,7 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
       container.removeEventListener("pointermove", handlePointerMove);
       container.removeEventListener("pointerleave", handlePointerLeave);
       ganttRef.current = null;
-      try {
-        instance.destructor();
-      } catch (error) {
-        if (!(error instanceof DOMException && error.name === "SecurityError")) throw error;
-      }
+      instance.destructor();
     };
   }, []);
 
