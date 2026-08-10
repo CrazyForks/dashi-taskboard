@@ -483,7 +483,11 @@ fn restart_launcher(
         return Ok(state.snapshot.lock().unwrap().clone());
     }
     stop_managed_child_locked(app, state);
-    start_launcher_locked(app, state)
+    let result = start_launcher_locked(app, state);
+    if result.is_err() {
+        state.intentional_stop.store(false, Ordering::SeqCst);
+    }
+    result
 }
 
 async fn check_for_startup_update(
@@ -588,6 +592,7 @@ async fn install_update(
         let restart_error = {
             let _lifecycle = state.lifecycle.lock().unwrap();
             let restart_error = start_launcher_locked(app, state).err();
+            state.intentional_stop.store(false, Ordering::SeqCst);
             state.update_in_progress.store(false, Ordering::SeqCst);
             restart_error
         };
