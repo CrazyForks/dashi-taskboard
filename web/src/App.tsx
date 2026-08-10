@@ -645,6 +645,8 @@ export function App() {
   const undoStackRef = useRef<UndoOperation[]>([]);
   const undoInFlightRef = useRef(false);
   const dragRegionRef = useRef<HTMLDivElement>(null);
+  const issueListRef = useRef<HTMLDivElement>(null);
+  const pendingIssueListScrollRef = useRef<{ projectId: string; scrollTop: number } | null>(null);
   const selectedProjectIdRef = useRef(selectedProjectId);
   selectedProjectIdRef.current = selectedProjectId;
 
@@ -1047,6 +1049,12 @@ export function App() {
   function openTaskDetail(task: Pick<Task, "identifier" | "projectId">) {
     const fullTask = tasksRef.current.find((candidate) => candidate.identifier === task.identifier);
     if (fullTask) markTaskRead(fullTask);
+    if (issueListRef.current) {
+      pendingIssueListScrollRef.current = {
+        projectId: selectedProjectId,
+        scrollTop: issueListRef.current.scrollTop,
+      };
+    }
     closeContextMenu();
     setProjectMenuOpen(false);
     setDetailTaskIdentifier(task.identifier);
@@ -1069,11 +1077,31 @@ export function App() {
     window.history.replaceState(window.history.state, "", url);
   }
 
+  useLayoutEffect(() => {
+    if (detailTaskIdentifier) return;
+    const pendingScroll = pendingIssueListScrollRef.current;
+    if (!pendingScroll) return;
+    if (boardView !== "list" || pendingScroll.projectId !== selectedProjectId) {
+      pendingIssueListScrollRef.current = null;
+      return;
+    }
+    if (!issueListRef.current) return;
+    issueListRef.current.scrollTop = pendingScroll.scrollTop;
+    pendingIssueListScrollRef.current = null;
+  }, [boardView, detailTaskIdentifier, selectedProjectId]);
+
   useEffect(() => {
     function syncRouteFromLocation() {
       const url = new URL(window.location.href);
       const routeProjectId = url.searchParams.get("project") ?? GLOBAL_PROJECT_ID;
-      setDetailTaskIdentifier(readIssueIdentifier(url.search));
+      const routeIssueIdentifier = readIssueIdentifier(url.search);
+      if (routeIssueIdentifier && issueListRef.current) {
+        pendingIssueListScrollRef.current = {
+          projectId: selectedProjectId,
+          scrollTop: issueListRef.current.scrollTop,
+        };
+      }
+      setDetailTaskIdentifier(routeIssueIdentifier);
       if (routeProjectId === selectedProjectId) return;
       setBoardView(readProjectBoardView(routeProjectId));
       setSelectedProjectId(routeProjectId);
@@ -2460,6 +2488,7 @@ export function App() {
           />
         ) : boardView === "list" ? (
           <IssueListView
+            scrollRef={issueListRef}
             tasks={filteredTasks}
             presentations={taskPresentations}
             currentUser={currentUser}
