@@ -9,6 +9,7 @@ import {
 } from "react";
 import type { Attachment } from "../types";
 import { attachmentContentUrl } from "../api";
+import { useTaskboardI18n } from "../i18n";
 import { clipboardImages, fileKey, MAX_ATTACHMENT_SIZE } from "./PendingAttachments";
 import { LinearIcon } from "./LinearIcon";
 
@@ -27,6 +28,7 @@ interface InlineImageSegment {
 
 export type InlineMediaSegment = InlineTextSegment | InlineImageSegment;
 export type PendingInlineImage = InlineImageSegment;
+type InlineMediaError = string | readonly [string, string];
 
 export interface InlineMediaComposerHandle {
   focus: () => void;
@@ -40,7 +42,7 @@ interface InlineMediaComposerProps {
   disabled?: boolean;
   className?: string;
   onChange: (segments: InlineMediaSegment[]) => void;
-  onError: (message: string | null) => void;
+  onError: (message: InlineMediaError | null) => void;
   onKeyDown?: KeyboardEventHandler<HTMLTextAreaElement>;
 }
 
@@ -134,6 +136,7 @@ function PendingImageBlock({
   onRemove: () => void;
 }) {
   const [previewUrl, setPreviewUrl] = useState("");
+  const { text } = useTaskboardI18n();
 
   useLayoutEffect(() => {
     const url = URL.createObjectURL(segment.file);
@@ -147,7 +150,7 @@ function PendingImageBlock({
       <button
         type="button"
         disabled={disabled}
-        aria-label={`移除 ${segment.file.name}`}
+        aria-label={text(`移除 ${segment.file.name}`, `Remove ${segment.file.name}`)}
         onClick={onRemove}
       >
         <LinearIcon name="close" />
@@ -169,6 +172,7 @@ export const InlineMediaComposer = forwardRef<InlineMediaComposerHandle, InlineM
   }, ref) {
     const textareas = useRef(new Map<string, HTMLTextAreaElement>());
     const pendingFocus = useRef<{ id: string; offset: number } | null>(null);
+    const { text } = useTaskboardI18n();
 
     useLayoutEffect(() => {
       for (const element of textareas.current.values()) resizeTextarea(element);
@@ -192,7 +196,10 @@ export const InlineMediaComposer = forwardRef<InlineMediaComposerHandle, InlineM
 
         const oversized = selected.find((file) => file.size > MAX_ATTACHMENT_SIZE);
         if (oversized) {
-          onError(`“${oversized.name}” 超过 25 MB，无法上传。`);
+          onError([
+            `“${oversized.name}” 超过 25 MB，无法上传。`,
+            `“${oversized.name}” is larger than 25 MB and cannot be uploaded.`,
+          ]);
           return;
         }
 
@@ -225,7 +232,10 @@ export const InlineMediaComposer = forwardRef<InlineMediaComposerHandle, InlineM
 
       const oversized = clipboardFiles.find((file) => file.size > MAX_ATTACHMENT_SIZE);
       if (oversized) {
-        onError(`“${oversized.name}” 超过 25 MB，无法上传。`);
+        onError([
+          `“${oversized.name}” 超过 25 MB，无法上传。`,
+          `“${oversized.name}” is larger than 25 MB and cannot be uploaded.`,
+        ]);
         return;
       }
 
@@ -273,7 +283,7 @@ export const InlineMediaComposer = forwardRef<InlineMediaComposerHandle, InlineM
               value={segment.text}
               rows={1}
               disabled={disabled}
-              aria-label={index === 0 ? ariaLabel : `${ariaLabel}续写`}
+              aria-label={index === 0 ? ariaLabel : text(`${ariaLabel}续写`, `${ariaLabel} continuation`)}
               placeholder={isEmpty && index === 0 ? placeholder : undefined}
               onChange={(event) => {
                 changeText(segment.id, event.target.value);
