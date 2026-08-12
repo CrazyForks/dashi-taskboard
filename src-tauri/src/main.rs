@@ -26,6 +26,7 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use uuid::Uuid;
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+const LAUNCHER_STOP_TIMEOUT: Duration = Duration::from_secs(36);
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const TASKBOARD_LISTEN_FD: i32 = 5;
 
@@ -61,6 +62,7 @@ struct LauncherState {
     generation: AtomicU64,
     lifecycle: Mutex<()>,
     taskboard_listener: Mutex<Option<TcpListener>>,
+    codex_port: Mutex<Option<u16>>,
     _instance_lock: File,
     data_directory: PathBuf,
     log_path: PathBuf,
@@ -94,6 +96,7 @@ impl LauncherState {
             generation: AtomicU64::new(0),
             lifecycle: Mutex::new(()),
             taskboard_listener: Mutex::new(None),
+            codex_port: Mutex::new(None),
             _instance_lock: instance_lock,
             pid_record_path: data_directory.join("launcher-child.json"),
             data_directory,
@@ -135,10 +138,14 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), std::io::Erro
     Ok(())
 }
 
+fn loopback_listener() -> Result<TcpListener, String> {
+    TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())
+}
+
 fn taskboard_listener(state: &LauncherState) -> Result<(i32, u16), String> {
     let mut listener = state.taskboard_listener.lock().unwrap();
     if listener.is_none() {
-        *listener = Some(TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?);
+        *listener = Some(loopback_listener()?);
     }
     let listener = listener.as_ref().unwrap();
     let port = listener
@@ -146,6 +153,20 @@ fn taskboard_listener(state: &LauncherState) -> Result<(i32, u16), String> {
         .map_err(|error| error.to_string())?
         .port();
     Ok((listener.as_raw_fd(), port))
+}
+
+fn codex_port(state: &LauncherState) -> Result<u16, String> {
+    let mut port = state.codex_port.lock().unwrap();
+    if let Some(port) = *port {
+        return Ok(port);
+    }
+    let listener = loopback_listener()?;
+    let selected = listener
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
+    *port = Some(selected);
+    Ok(selected)
 }
 
 fn update_snapshot(
@@ -250,6 +271,16 @@ fn terminate_process_group(pid: u32) {
     }
 }
 
+fn stop_launcher_process_group(pid: u32) {
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+    if !wait_for_process_group_exit(pid, LAUNCHER_STOP_TIMEOUT) {
+        send_process_group_signal(pid, libc::SIGKILL);
+        let _ = wait_for_process_group_exit(pid, Duration::from_secs(1));
+    }
+}
+
 fn process_matches_record(record: &LauncherPidRecord) -> bool {
     let output = StdCommand::new("/bin/ps")
         .args(["-p", &record.pid.to_string(), "-o", "command="])
@@ -269,7 +300,7 @@ fn stop_recorded_child(state: &LauncherState) {
         .and_then(|content| serde_json::from_str::<LauncherPidRecord>(&content).ok());
     if let Some(record) = record {
         if process_matches_record(&record) {
-            terminate_process_group(record.pid);
+            stop_launcher_process_group(record.pid);
         }
     }
     let _ = fs::remove_file(&state.pid_record_path);
@@ -305,7 +336,7 @@ fn stop_managed_child_locked(app: &AppHandle, state: &Arc<LauncherState>) {
     state.intentional_stop.store(true, Ordering::SeqCst);
     if let Some(pid) = state.child.lock().unwrap().take() {
         append_log(state, &format!("Stopping launcher child {pid}"));
-        terminate_process_group(pid);
+        stop_launcher_process_group(pid);
         clear_pid_record(state, pid);
     }
     update_snapshot(app, state, |snapshot| {
@@ -423,6 +454,7 @@ fn start_launcher_locked(
         resource_directory.join("bin").display()
     );
     let (taskboard_listener_fd, taskboard_port) = taskboard_listener(state)?;
+    let codex_port = codex_port(state)?.to_string();
     let instance_token = Uuid::new_v4().to_string();
     let instance_secret = Uuid::new_v4().to_string();
     let version = state.snapshot.lock().unwrap().version.clone();
@@ -431,7 +463,7 @@ fn start_launcher_locked(
     let mut command = StdCommand::new(&node_path);
     command
         .arg(&injector_path)
-        .args(["--launch", "--watch", "--open", "--cdp-pipe"])
+        .args(["--launch", "--watch", "--open", "--port", &codex_port])
         .args(["--startup-token", &instance_token, "--app-path"])
         .arg(&codex_app)
         .env("CODEX_TASKBOARD_DATA_DIR", &state.data_directory)
@@ -486,7 +518,7 @@ fn start_launcher_locked(
     append_log(
         state,
         &format!(
-            "Started launcher child {pid} on Taskboard {taskboard_port} with private CDP pipe"
+            "Started launcher child {pid} on Taskboard {taskboard_port} with Codex CDP {codex_port}"
         ),
     );
     if let Some(stdout) = stdout {
