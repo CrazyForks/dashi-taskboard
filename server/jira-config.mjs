@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promi
 import path from "node:path";
 
 const CONFIG_VERSION = 2;
+const LEGACY_CONFIG_VERSION = 1;
 
 export class JiraConfigError extends Error {
   constructor(code, message) {
@@ -88,7 +89,7 @@ function parseConfig(value) {
     value === null
     || typeof value !== "object"
     || Array.isArray(value)
-    || value.version !== CONFIG_VERSION
+    || (value.version !== LEGACY_CONFIG_VERSION && value.version !== CONFIG_VERSION)
   ) {
     throw new JiraConfigError("INVALID_JIRA_CONFIG", "Jira 配置文件无效");
   }
@@ -101,21 +102,25 @@ function parseConfig(value) {
     "displayName",
     "projects",
   ]);
+  if (value.version === LEGACY_CONFIG_VERSION) allowedKeys.delete("originId");
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
     throw new JiraConfigError("INVALID_JIRA_CONFIG", "Jira 配置文件包含未知字段");
   }
   const credentials = validateCredentials(value.username, value.password);
-  if (typeof value.originId !== "string" || !/^[a-f0-9]{64}$/.test(value.originId)) {
+  if (
+    value.version === CONFIG_VERSION
+    && (typeof value.originId !== "string" || !/^[a-f0-9]{64}$/.test(value.originId))
+  ) {
     throw new JiraConfigError("INVALID_JIRA_CONFIG", "Jira 配置缺少稳定实例身份");
   }
   if (typeof value.displayName !== "string" || !value.displayName.trim()) {
     throw new JiraConfigError("INVALID_JIRA_CONFIG", "Jira 配置缺少用户显示名称");
   }
   return {
-    version: CONFIG_VERSION,
+    version: value.version,
     baseUrl: normalizeJiraUrl(value.baseUrl),
     ...credentials,
-    originId: value.originId,
+    ...(value.version === CONFIG_VERSION ? { originId: value.originId } : {}),
     displayName: value.displayName.trim().slice(0, 254),
     projects: validateProjects(value.projects),
   };
@@ -149,7 +154,7 @@ export function createJiraConfigStore({ configPath }) {
       return readFromDisk();
     },
     async save(input) {
-      const config = parseConfig({ version: CONFIG_VERSION, ...input });
+      const config = parseConfig({ ...input, version: CONFIG_VERSION });
       const operation = pendingWrite.catch(() => {}).then(async () => {
         await writeAtomically(config);
         return config;

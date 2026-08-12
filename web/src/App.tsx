@@ -1567,6 +1567,13 @@ export function App() {
       if (requestId !== tasksRequestRef.current) return;
       setTasks(sortTasks(nextTasks));
       setArchivedTasks(sortTasks(nextArchivedTasks));
+      setProjects((current) => current.map((project) => {
+        if (project.id !== projectId || project.source !== "jira") return project;
+        const labels = [...new Set(nextTasks.flatMap((task) => task.labels))];
+        return JSON.stringify(labels) === JSON.stringify(project.labels)
+          ? project
+          : { ...project, labels };
+      }));
       setHasLoadedTasks(true);
       setTasksLoadError((current) => (
         current?.requestId === requestId ? null : current

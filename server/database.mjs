@@ -888,20 +888,52 @@ export class TaskboardDatabase {
     `).get(JIRA_PROJECT_ID);
   }
 
-  syncJiraTasks(issues, { archiveMissing = true, projectName } = {}) {
+  syncJiraTasks(issues, { archiveMissing = true, projectName, legacyIdentity = null } = {}) {
     const timestamp = now();
     const seenTaskIds = new Set();
+    const projectLabels = JSON.stringify([
+      ...new Set(issues.flatMap((issue) => issue.labels)),
+    ]);
     this.database.exec("BEGIN IMMEDIATE");
     try {
       this.database.prepare(`
-        INSERT INTO projects (id, name, workspace_path, next_task_number, created_at, updated_at)
-        VALUES (?, ?, NULL, 1, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at
-      `).run(JIRA_PROJECT_ID, projectName, timestamp, timestamp);
+        INSERT INTO projects (id, name, workspace_path, labels, next_task_number, created_at, updated_at)
+        VALUES (?, ?, NULL, ?, 1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          labels = excluded.labels,
+          updated_at = excluded.updated_at
+      `).run(JIRA_PROJECT_ID, projectName, projectLabels, timestamp, timestamp);
       const findExisting = this.database.prepare(`
         SELECT * FROM tasks
         WHERE external_source = 'jira' AND external_origin = ? AND external_id = ?
       `);
+      const migrateLegacyIdentity = this.database.prepare(`
+        UPDATE tasks SET
+          identifier = ?, external_origin = ?, external_id = ?, external_key = ?
+        WHERE id = ?
+      `);
+      if (legacyIdentity) {
+        const legacyTasks = this.database.prepare(`
+          SELECT id, identifier, external_id
+          FROM tasks
+          WHERE project_id = ?
+            AND external_source = 'jira'
+            AND external_origin IS NULL
+            AND substr(external_id, 1, 17) = ?
+            AND id = 'jira:' || external_id
+        `).all(JIRA_PROJECT_ID, `${legacyIdentity.urlHash}:`);
+        for (const legacyTask of legacyTasks) {
+          const externalId = legacyTask.external_id.slice(17);
+          migrateLegacyIdentity.run(
+            `JIRA:${legacyIdentity.originId.toUpperCase()}:${externalId}`,
+            legacyIdentity.originId,
+            externalId,
+            legacyTask.identifier,
+            legacyTask.id,
+          );
+        }
+      }
       const insertTask = this.database.prepare(`
         INSERT INTO tasks (
           id, identifier, project_id, title, description, status, priority, labels,
@@ -933,8 +965,8 @@ export class TaskboardDatabase {
       `);
 
       for (const issue of issues) {
-        seenTaskIds.add(issue.id);
         const existing = findExisting.get(issue.externalOrigin, issue.externalId);
+        seenTaskIds.add(existing?.id ?? issue.id);
         const labels = JSON.stringify(issue.labels);
         if (!existing) {
           insertTask.run(

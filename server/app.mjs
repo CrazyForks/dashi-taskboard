@@ -1877,7 +1877,7 @@ export function createTaskboardServer(options = {}) {
               password,
               projects: body.projects,
             });
-            events.emit("project.updated", { project: database.getProject(JIRA_PROJECT_ID) });
+            events.emit("project.labels.updated", { project: database.getProject(JIRA_PROJECT_ID) });
             return sendJson(response, 200, { connection });
           } catch (error) {
             if (error instanceof ApiError) throw error;
@@ -1894,7 +1894,7 @@ export function createTaskboardServer(options = {}) {
         }
         await assertEmptyRequestBody(request, "POST /api/local/jira-connection/sync");
         const connection = await jira.sync({ force: true });
-        events.emit("project.updated", { project: database.getProject(JIRA_PROJECT_ID) });
+        events.emit("project.labels.updated", { project: database.getProject(JIRA_PROJECT_ID) });
         return sendJson(response, 200, { connection });
       }
 
@@ -2149,6 +2149,13 @@ export function createTaskboardServer(options = {}) {
         validateProjectId(projectId);
         if (request.method !== "POST" && request.method !== "DELETE") {
           return methodNotAllowed(response, ["POST", "DELETE"]);
+        }
+        if (request.method === "DELETE" && projectId === JIRA_PROJECT_ID) {
+          throw new ApiError(
+            409,
+            "JIRA_LABEL_CATALOG_DELETE_UNAVAILABLE",
+            "Jira 标签目录由同步管理，不能在 Taskboard 中删除",
+          );
         }
         const label = parseProjectLabel(await readJson(request));
         const project = request.method === "POST"
@@ -2586,6 +2593,7 @@ export function createTaskboardServer(options = {}) {
           const { version, changes, threadId, assigneeTarget } = parseTaskPatch(await readJson(request));
           const current = database.getTask(id);
           if (!current) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${id}' does not exist`);
+          let jiraChanged = false;
           if (current.source !== "jira" && changes.projectId === JIRA_PROJECT_ID) {
             throw new ApiError(
               409,
@@ -2609,12 +2617,35 @@ export function createTaskboardServer(options = {}) {
             if (assigneeTarget !== undefined) {
               throw new ApiError(409, "JIRA_ASSIGNEE_UNAVAILABLE", "请在 Jira 中修改经办人");
             }
-            await jira.updateTask(current, changes);
+            const dueDate = Object.hasOwn(changes, "dueDate") ? changes.dueDate : current.dueDate;
+            const recurrence = Object.hasOwn(changes, "recurrence")
+              ? changes.recurrence
+              : current.recurrence;
+            if (recurrence && !dueDate) {
+              throw new ApiError(400, "INVALID_FIELD", "A recurring issue requires a due date");
+            }
+            jiraChanged = await jira.updateTask(current, changes);
           }
           if (assigneeTarget !== undefined) {
             changes.assignee = resolveAssignee(assigneeTarget, actor);
           }
-          const task = database.updateTask(id, version, changes, threadId, actor);
+          let task;
+          try {
+            task = database.updateTask(id, version, changes, threadId, actor);
+          } catch (error) {
+            if (jiraChanged) {
+              try {
+                await jira.reconcile();
+              } catch {
+                throw new ApiError(
+                  502,
+                  "JIRA_RECONCILE_FAILED",
+                  "Jira 已更新，但 Taskboard 重新同步失败，请手动同步",
+                );
+              }
+            }
+            throw error;
+          }
           events.emit("task.updated", { task });
           return sendJson(response, 200, { task });
         }
