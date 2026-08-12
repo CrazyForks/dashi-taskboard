@@ -76,12 +76,19 @@ function actorFromJira(user, fallback) {
   };
 }
 
-function jiraOriginId(baseUrl) {
-  return createHash("sha256").update(baseUrl).digest("hex").slice(0, 16);
+function jiraOriginId(manifest) {
+  const applicationId = typeof manifest?.id === "string" ? manifest.id.trim() : "";
+  if (!applicationId) {
+    throw new ApiError(502, "INVALID_JIRA_ORIGIN", "Jira 未返回稳定的实例身份");
+  }
+  return createHash("sha256").update(applicationId).digest("hex");
 }
 
 function normalizeIssue(issue, config, index = 0) {
   const fields = issue?.fields ?? {};
+  const externalId = String(issue.id);
+  const externalKey = limitedString(issue.key, "JIRA", 128);
+  const internalId = `JIRA:${config.originId.toUpperCase()}:${externalId}`;
   const assignee = actorFromJira(fields.assignee, config.displayName);
   const reporter = actorFromJira(fields.reporter, config.displayName);
   const labels = Array.isArray(fields.labels)
@@ -92,9 +99,9 @@ function normalizeIssue(issue, config, index = 0) {
     }))].slice(0, 20)
     : [];
   return {
-    id: `jira:${jiraOriginId(config.baseUrl)}:${String(issue.id)}`,
-    identifier: limitedString(issue.key, "JIRA", 128),
-    title: limitedString(fields.summary, String(issue.key), 240),
+    id: internalId,
+    identifier: internalId,
+    title: limitedString(fields.summary, externalKey, 240),
     description: typeof fields.description === "string" ? fields.description.slice(0, 100_000) : "",
     status: taskStatusFromJira(fields.status),
     priority: taskPriorityFromJira(fields.priority),
@@ -103,7 +110,10 @@ function normalizeIssue(issue, config, index = 0) {
     creator: reporter,
     assignee,
     dueDate: typeof fields.duedate === "string" ? fields.duedate : null,
-    externalUrl: `${config.baseUrl}/browse/${encodeURIComponent(String(issue.key))}`,
+    externalOrigin: config.originId,
+    externalId,
+    externalKey,
+    externalUrl: `${config.baseUrl}/browse/${encodeURIComponent(externalKey)}`,
     createdAt: typeof fields.created === "string" ? fields.created : new Date().toISOString(),
     updatedAt: typeof fields.updated === "string" ? fields.updated : new Date().toISOString(),
   };
@@ -210,20 +220,35 @@ export function createJiraIntegration({ configStore, database, fetch: fetchImple
     return issues;
   }
 
+  async function fetchOriginId(config) {
+    return jiraOriginId(await request(config, "/rest/applinks/1.0/manifest"));
+  }
+
+  async function assertLiveOrigin(config) {
+    if (await fetchOriginId(config) !== config.originId) {
+      throw new ApiError(
+        409,
+        "JIRA_ORIGIN_MISMATCH",
+        "当前 Jira 地址指向了另一个实例，请重新连接后再操作",
+      );
+    }
+  }
+
   async function validateConnection(candidate) {
+    const originId = await fetchOriginId(candidate);
     const myself = await request(candidate, "/rest/api/2/myself");
     const displayName = String(myself?.displayName ?? myself?.name ?? candidate.username).trim();
-    const config = { ...candidate, displayName };
+    const config = { ...candidate, originId, displayName };
     const issues = await fetchAssignedIssues(config);
     return { config, issues };
   }
 
   async function syncWithConfig(config, { archiveMissing = true } = {}) {
+    await assertLiveOrigin(config);
     const issues = await fetchAssignedIssues(config);
-    database.ensureJiraProject(`Jira · ${config.displayName}`);
     database.syncJiraTasks(
       issues.map((issue, index) => normalizeIssue(issue, config, index)),
-      { archiveMissing },
+      { archiveMissing, projectName: `Jira · ${config.displayName}` },
     );
     lastSyncedAt = new Date().toISOString();
     return safeConfig(config, lastSyncedAt);
@@ -248,21 +273,33 @@ export function createJiraIntegration({ configStore, database, fetch: fetchImple
       `/rest/api/2/issue/${encodeURIComponent(issueKey)}/transitions?expand=transitions.fields`,
     );
     const transitions = Array.isArray(payload?.transitions) ? payload.transitions : [];
-    const transition = transitions.find((candidate) => taskStatusFromJira(candidate.to) === targetStatus);
-    if (!transition) {
+    const matches = transitions.filter((candidate) => taskStatusFromJira(candidate.to) === targetStatus);
+    const availableStatuses = transitions.map((candidate) => ({
+      id: String(candidate.id),
+      name: String(candidate.name ?? candidate.to?.name ?? ""),
+      taskboardStatus: taskStatusFromJira(candidate.to),
+    }));
+    if (matches.length === 0) {
       throw new ApiError(
         409,
         "JIRA_TRANSITION_UNAVAILABLE",
         `Jira 当前工作流不能将 ${issueKey} 移到目标状态`,
+        { availableStatuses },
+      );
+    }
+    if (matches.length > 1) {
+      throw new ApiError(
+        409,
+        "JIRA_TRANSITION_AMBIGUOUS",
+        `Jira 有多个工作流操作可将 ${issueKey} 移到目标状态，请在 Jira 中选择`,
         {
-          availableStatuses: transitions.map((candidate) => ({
-            id: String(candidate.id),
-            name: String(candidate.name ?? candidate.to?.name ?? ""),
-            taskboardStatus: taskStatusFromJira(candidate.to),
-          })),
+          availableStatuses: availableStatuses.filter(
+            (candidate) => candidate.taskboardStatus === targetStatus,
+          ),
         },
       );
     }
+    const [transition] = matches;
     await request(config, `/rest/api/2/issue/${encodeURIComponent(issueKey)}/transitions`, {
       method: "POST",
       body: JSON.stringify({ transition: { id: String(transition.id) } }),
@@ -309,12 +346,11 @@ export function createJiraIntegration({ configStore, database, fetch: fetchImple
         );
       }
       const { config, issues } = await validateConnection(candidate);
-      await configStore.save(config);
-      database.ensureJiraProject(`Jira · ${config.displayName}`);
       database.syncJiraTasks(
         issues.map((issue, index) => normalizeIssue(issue, config, index)),
-        { archiveMissing: true },
+        { archiveMissing: true, projectName: `Jira · ${config.displayName}` },
       );
+      await configStore.save(config);
       lastSyncedAt = new Date().toISOString();
       return safeConfig(config, lastSyncedAt);
     },
@@ -322,8 +358,16 @@ export function createJiraIntegration({ configStore, database, fetch: fetchImple
     async updateTask(task, changes) {
       const config = await configStore.read();
       if (!config) throw new ApiError(409, "JIRA_NOT_CONFIGURED", "Jira 尚未配置");
+      if (task.externalOrigin !== config.originId || !task.externalKey) {
+        throw new ApiError(
+          409,
+          "JIRA_ORIGIN_MISMATCH",
+          "此任务不属于当前 Jira 连接，请重新同步后再操作",
+        );
+      }
+      await assertLiveOrigin(config);
       if (Object.hasOwn(changes, "status") && changes.status !== task.status) {
-        await transitionIssue(config, task.identifier, changes.status);
+        await transitionIssue(config, task.externalKey, changes.status);
       }
       const fields = {};
       if (Object.hasOwn(changes, "title") && changes.title !== task.title) fields.summary = changes.title;
@@ -340,7 +384,7 @@ export function createJiraIntegration({ configStore, database, fetch: fetchImple
         fields.priority = await resolveJiraPriority(config, changes.priority);
       }
       if (Object.keys(fields).length > 0) {
-        await request(config, `/rest/api/2/issue/${encodeURIComponent(task.identifier)}`, {
+        await request(config, `/rest/api/2/issue/${encodeURIComponent(task.externalKey)}`, {
           method: "PUT",
           body: JSON.stringify({ fields }),
         });
@@ -350,7 +394,15 @@ export function createJiraIntegration({ configStore, database, fetch: fetchImple
       if (status === task.status) return;
       const config = await configStore.read();
       if (!config) throw new ApiError(409, "JIRA_NOT_CONFIGURED", "Jira 尚未配置");
-      await transitionIssue(config, task.identifier, status);
+      if (task.externalOrigin !== config.originId || !task.externalKey) {
+        throw new ApiError(
+          409,
+          "JIRA_ORIGIN_MISMATCH",
+          "此任务不属于当前 Jira 连接，请重新同步后再操作",
+        );
+      }
+      await assertLiveOrigin(config);
+      await transitionIssue(config, task.externalKey, status);
     },
   };
 }

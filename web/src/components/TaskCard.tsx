@@ -247,6 +247,7 @@ function PriorityControl({
   onChange: (priority: TaskPriority) => void;
 }) {
   const { language, text } = useTaskboardI18n();
+  const displayIdentifier = task.externalKey ?? task.identifier;
   return (
     <TaskPropertyPicker
       value={task.priority}
@@ -260,7 +261,7 @@ function PriorityControl({
       disabled={disabled}
       className="card-property-control"
       triggerClassName={`priority-chip priority-chip-${task.priority}`}
-      ariaLabel={text(`${task.identifier} 优先级`, `${task.identifier} priority`)}
+      ariaLabel={text(`${displayIdentifier} 优先级`, `${displayIdentifier} priority`)}
       title={text(
         `优先级：${taskPriorityLabel(language, task.priority)}`,
         `Priority: ${taskPriorityLabel(language, task.priority)}`,
@@ -281,13 +282,14 @@ function DueDateControl({
   onChange: (dueDate: string | null) => void;
 }) {
   const { locale, text } = useTaskboardI18n();
+  const displayIdentifier = task.externalKey ?? task.identifier;
   if (!task.dueDate) return null;
   return (
     <label className="due-date-chip card-property-control" title={text(`截止日期 ${task.dueDate}`, `Due date ${task.dueDate}`)}>
       <TaskboardIcon name="calendar" /> {calendarDate(task.dueDate, locale)}
       <input
         type="date"
-        aria-label={text(`${task.identifier} 截止日期`, `${task.identifier} due date`)}
+        aria-label={text(`${displayIdentifier} 截止日期`, `${displayIdentifier} due date`)}
         value={task.dueDate}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value || null)}
@@ -310,6 +312,7 @@ function AssigneeControl({
   onChange: (target: AssigneeTarget) => void;
 }) {
   const { text } = useTaskboardI18n();
+  const displayIdentifier = task.externalKey ?? task.identifier;
   const options = [task.assignee, currentUser, CODEX_AGENT_ACTOR]
     .filter((actor, index, actors) => (
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index
@@ -318,7 +321,7 @@ function AssigneeControl({
     <label className="task-participants-control card-property-control" title={text(`负责人：${task.assignee.name}`, `Assignee: ${task.assignee.name}`)}>
       <ParticipantAvatars participants={participants} />
       <select
-        aria-label={text(`${task.identifier} 负责人`, `${task.identifier} assignee`)}
+        aria-label={text(`${displayIdentifier} 负责人`, `${displayIdentifier} assignee`)}
         value={actorKey(task.assignee)}
         disabled={disabled}
         onChange={(event) => {
@@ -358,6 +361,7 @@ export function TaskCard({
   onOpenConversation,
 }: TaskCardProps) {
   const { locale, text } = useTaskboardI18n();
+  const displayIdentifier = task.externalKey ?? task.identifier;
   const [propertyMenu, setPropertyMenu] = useState<"priority" | "labels" | null>(null);
   const [savingProperty, setSavingProperty] = useState<"priority" | "labels" | "dueDate" | "assignee" | null>(null);
   const creator: ActorIdentity = {
@@ -412,20 +416,20 @@ export function TaskCard({
       <button
         className="task-card-open"
         type="button"
-        aria-label={text(`打开 ${task.identifier}: ${task.title}`, `Open ${task.identifier}: ${task.title}`)}
+        aria-label={text(`打开 ${displayIdentifier}: ${task.title}`, `Open ${displayIdentifier}: ${task.title}`)}
         onClick={() => onEdit(task)}
       />
 
       <div className="card-topline">
         <span className="card-reference">
-          <span className="task-identifier">ID: {task.identifier}</span>
+          <span className="task-identifier">ID: {displayIdentifier}</span>
         </span>
         {presentation.unread && <span className="task-unread-dot" aria-label={text("有未读更新", "Unread updates")} />}
         {task.status === "in_review" && onComplete && (
           <button
             className="task-card-complete"
             type="button"
-            aria-label={text(`完成 ${task.identifier}`, `Complete ${task.identifier}`)}
+            aria-label={text(`完成 ${displayIdentifier}`, `Complete ${displayIdentifier}`)}
             title={text("完成", "Complete")}
             onClick={(event) => {
               event.stopPropagation();
@@ -442,7 +446,7 @@ export function TaskCard({
               task={task}
               participants={task.participants.length ? task.participants : [creator]}
               currentUser={currentUser}
-              disabled={propertyDisabled}
+              disabled={propertyDisabled || task.source === "jira"}
               onChange={(assigneeTarget) => updateProperty({ assigneeTarget }, "assignee")}
             />
             <span>{createdDate(task.createdAt, locale, text)}</span>
@@ -493,7 +497,7 @@ export function TaskCard({
               task={task}
               participants={task.participants}
               currentUser={currentUser}
-              disabled={propertyDisabled}
+              disabled={propertyDisabled || task.source === "jira"}
               onChange={(assigneeTarget) => updateProperty({ assigneeTarget }, "assignee")}
             />
           )}

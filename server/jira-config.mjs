@@ -1,7 +1,7 @@
 import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const CONFIG_VERSION = 1;
+const CONFIG_VERSION = 2;
 
 export class JiraConfigError extends Error {
   constructor(code, message) {
@@ -12,6 +12,12 @@ export class JiraConfigError extends Error {
 }
 
 export function normalizeJiraUrl(value) {
+  if (typeof value !== "string" || value.includes("?") || value.includes("#")) {
+    throw new JiraConfigError(
+      "INVALID_JIRA_URL",
+      "Jira 地址必须使用 http 或 https，且不能包含账号、查询参数或片段",
+    );
+  }
   let url;
   try {
     url = new URL(value);
@@ -91,6 +97,7 @@ function parseConfig(value) {
     "baseUrl",
     "username",
     "password",
+    "originId",
     "displayName",
     "projects",
   ]);
@@ -98,6 +105,9 @@ function parseConfig(value) {
     throw new JiraConfigError("INVALID_JIRA_CONFIG", "Jira 配置文件包含未知字段");
   }
   const credentials = validateCredentials(value.username, value.password);
+  if (typeof value.originId !== "string" || !/^[a-f0-9]{64}$/.test(value.originId)) {
+    throw new JiraConfigError("INVALID_JIRA_CONFIG", "Jira 配置缺少稳定实例身份");
+  }
   if (typeof value.displayName !== "string" || !value.displayName.trim()) {
     throw new JiraConfigError("INVALID_JIRA_CONFIG", "Jira 配置缺少用户显示名称");
   }
@@ -105,6 +115,7 @@ function parseConfig(value) {
     version: CONFIG_VERSION,
     baseUrl: normalizeJiraUrl(value.baseUrl),
     ...credentials,
+    originId: value.originId,
     displayName: value.displayName.trim().slice(0, 254),
     projects: validateProjects(value.projects),
   };

@@ -554,7 +554,7 @@ export function DashboardView({
                 >
                   <span className="dashboard-attention-mark" aria-hidden="true"><i /></span>
                   <strong>{task.title}</strong>
-                  <small>ID: {task.identifier}</small>
+                  <small>ID: {task.externalKey ?? task.identifier}</small>
                 </button>
               )) : (
                 <div className="dashboard-empty">{text("当前没有需要关注的议题", "No issues need attention")}</div>
@@ -572,7 +572,7 @@ export function DashboardView({
                     className="dashboard-running-open"
                     onClick={() => onOpenTask(task)}
                   >
-                    <small>ID: {task.identifier}</small>
+                    <small>ID: {task.externalKey ?? task.identifier}</small>
                     <strong>{task.title}</strong>
                   </button>
                   <div className="dashboard-running-footer">
@@ -693,7 +693,7 @@ export function DashboardView({
                     aria-hidden="true"
                   />
                   <strong>{task.title}</strong>
-                  <time>ID: {task.identifier} | {shortDate(task.dueDate!, locale)}</time>
+                  <time>ID: {task.externalKey ?? task.identifier} | {shortDate(task.dueDate!, locale)}</time>
                 </button>
               )) : (
                 <div className="dashboard-empty">{text("近期没有到期议题", "No issues are due soon")}</div>

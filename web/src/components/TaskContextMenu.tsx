@@ -108,6 +108,7 @@ export function TaskContextMenu({
   onArchive,
 }: TaskContextMenuProps) {
   const { language, text } = useTaskboardI18n();
+  const displayIdentifier = task.externalKey ?? task.identifier;
   const menuRef = useRef<HTMLDivElement>(null);
   const submenuTimerRef = useRef<number | null>(null);
   const [submenu, setSubmenu] = useState<SubmenuName | null>(null);
@@ -255,7 +256,7 @@ export function TaskContextMenu({
       ref={menuRef}
       className="task-context-menu"
       role="menu"
-      aria-label={text(`${task.identifier} 操作`, `${task.identifier} actions`)}
+      aria-label={text(`${displayIdentifier} 操作`, `${displayIdentifier} actions`)}
       data-submenu-side={submenuSide}
       style={{ left: placedPosition.x, top: placedPosition.y }}
       onKeyDown={handleKeyDown}
@@ -371,12 +372,14 @@ export function TaskContextMenu({
           onPointerEnter={closeSubmenu}
           onClick={() => closeThen(() => onEdit(task))}
         />
-        <MenuItem
-          label={text("创建副本", "Create copy")}
-          icon={<LinearIcon name="copy" />}
-          onPointerEnter={closeSubmenu}
-          onClick={() => closeThen(() => onDuplicate(task))}
-        />
+        {task.source !== "jira" && (
+          <MenuItem
+            label={text("创建副本", "Create copy")}
+            icon={<LinearIcon name="copy" />}
+            onPointerEnter={closeSubmenu}
+            onClick={() => closeThen(() => onDuplicate(task))}
+          />
+        )}
         <MenuItem
           label={text("复制", "Copy")}
           icon={<LinearIcon name="copy" />}
@@ -390,8 +393,8 @@ export function TaskContextMenu({
               <MenuItem
                 label={text("复制议题 ID", "Copy issue ID")}
                 onClick={() => closeThen(() => onCopy(
-                  task.identifier,
-                  text(`${task.identifier} 已复制。`, `${task.identifier} copied.`),
+                  displayIdentifier,
+                  text(`${displayIdentifier} 已复制。`, `${displayIdentifier} copied.`),
                 ))}
               />
               <MenuItem
@@ -404,7 +407,7 @@ export function TaskContextMenu({
               <MenuItem
                 label={text("复制 Markdown", "Copy Markdown")}
                 onClick={() => closeThen(() => onCopy(
-                  `**${task.identifier}** ${task.title}`,
+                  `**${displayIdentifier}** ${task.title}`,
                   text("Markdown 已复制。", "Markdown copied."),
                 ))}
               />
@@ -419,18 +422,21 @@ export function TaskContextMenu({
         />
       </div>
 
-      <div className="context-menu-divider" role="separator" />
-
-      <div className="context-menu-group">
-        <MenuItem
-          label={text("归档议题", "Archive issue")}
-          icon={<LinearIcon name="trash" />}
-          shortcut="⌘⌫"
-          danger
-          onPointerEnter={closeSubmenu}
-          onClick={() => closeThen(() => onArchive(task))}
-        />
-      </div>
+      {task.source !== "jira" && (
+        <>
+          <div className="context-menu-divider" role="separator" />
+          <div className="context-menu-group">
+            <MenuItem
+              label={text("归档议题", "Archive issue")}
+              icon={<LinearIcon name="trash" />}
+              shortcut="⌘⌫"
+              danger
+              onPointerEnter={closeSubmenu}
+              onClick={() => closeThen(() => onArchive(task))}
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 

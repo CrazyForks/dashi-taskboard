@@ -133,6 +133,7 @@ function relationActivityValue(type, task) {
   return {
     type,
     identifier: task.identifier,
+    externalKey: task.externalKey ?? null,
     title: task.title,
   };
 }
@@ -192,6 +193,8 @@ function taskFromRow(row) {
       ? { interval: row.recurrence_interval, unit: row.recurrence_unit }
       : null,
     source: row.external_source === "jira" ? "jira" : "local",
+    externalOrigin: row.external_origin ?? null,
+    externalKey: row.external_key ?? null,
     externalUrl: row.external_url ?? null,
     archivedAt: row.archived_at,
     version: row.version,
@@ -204,6 +207,7 @@ function taskRelationSummaryFromRow(row) {
   return {
     id: row.id,
     identifier: row.identifier,
+    externalKey: row.external_key ?? null,
     projectId: row.project_id,
     title: row.title,
     status: row.status,
@@ -381,7 +385,9 @@ export class TaskboardDatabase {
         recurrence_interval INTEGER,
         recurrence_unit TEXT,
         external_source TEXT,
+        external_origin TEXT,
         external_id TEXT,
+        external_key TEXT,
         external_url TEXT,
         archived_at TEXT,
         version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
@@ -570,13 +576,20 @@ export class TaskboardDatabase {
     if (!migratedTaskColumns.some((column) => column.name === "external_id")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN external_id TEXT");
     }
+    if (!migratedTaskColumns.some((column) => column.name === "external_origin")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN external_origin TEXT");
+    }
+    if (!migratedTaskColumns.some((column) => column.name === "external_key")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN external_key TEXT");
+    }
     if (!migratedTaskColumns.some((column) => column.name === "external_url")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN external_url TEXT");
     }
     this.database.exec(`
-      CREATE UNIQUE INDEX IF NOT EXISTS tasks_external_source_id
-      ON tasks(external_source, external_id)
-      WHERE external_source IS NOT NULL AND external_id IS NOT NULL
+      DROP INDEX IF EXISTS tasks_external_source_id;
+      CREATE UNIQUE INDEX IF NOT EXISTS tasks_external_source_origin_id
+      ON tasks(external_source, external_origin, external_id)
+      WHERE external_source IS NOT NULL AND external_origin IS NOT NULL AND external_id IS NOT NULL
     `);
     this.database.exec(`
       UPDATE tasks
@@ -826,17 +839,19 @@ export class TaskboardDatabase {
     `).get(JIRA_PROJECT_ID);
   }
 
-  syncJiraTasks(issues, { archiveMissing = true } = {}) {
+  syncJiraTasks(issues, { archiveMissing = true, projectName } = {}) {
     const timestamp = now();
-    const seenIds = new Set();
+    const seenTaskIds = new Set();
     this.database.exec("BEGIN IMMEDIATE");
     try {
+      this.database.prepare(`
+        INSERT INTO projects (id, name, workspace_path, next_task_number, created_at, updated_at)
+        VALUES (?, ?, NULL, 1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at
+      `).run(JIRA_PROJECT_ID, projectName, timestamp, timestamp);
       const findExisting = this.database.prepare(`
-        SELECT * FROM tasks WHERE external_source = 'jira' AND external_id = ?
-      `);
-      const findLegacy = this.database.prepare(`
         SELECT * FROM tasks
-        WHERE external_source = 'jira' AND external_id = ? AND identifier = ?
+        WHERE external_source = 'jira' AND external_origin = ? AND external_id = ?
       `);
       const insertTask = this.database.prepare(`
         INSERT INTO tasks (
@@ -845,7 +860,7 @@ export class TaskboardDatabase {
           assignee_type, assignee_id, assignee_name, assignee_avatar_url,
           workflow_id, git_branch, worktree_path, worktree_branch,
           start_date, due_date, recurrence_interval, recurrence_unit,
-          external_source, external_id, external_url,
+          external_source, external_origin, external_id, external_key, external_url,
           archived_at, version, created_at, updated_at
         ) VALUES (
           ?, ?, ?, ?, ?, ?, ?, ?,
@@ -853,7 +868,7 @@ export class TaskboardDatabase {
           ?, ?, ?, ?,
           NULL, NULL, NULL, NULL,
           NULL, ?, NULL, NULL,
-          'jira', ?, ?,
+          'jira', ?, ?, ?, ?,
           NULL, 1, ?, ?
         )
       `);
@@ -862,56 +877,43 @@ export class TaskboardDatabase {
           identifier = ?, title = ?, description = ?, status = ?, priority = ?, labels = ?,
           sort_order = ?, creator_type = ?, creator_id = ?, creator_name = ?, creator_avatar_url = ?,
           assignee_type = ?, assignee_id = ?, assignee_name = ?, assignee_avatar_url = ?,
-          due_date = ?, external_id = ?, external_url = ?, archived_at = NULL,
+          due_date = ?, external_origin = ?, external_id = ?, external_key = ?, external_url = ?,
+          archived_at = NULL,
           version = version + 1, updated_at = ?
         WHERE id = ?
       `);
 
       for (const issue of issues) {
-        const externalId = issue.id.replace(/^jira:/, "");
-        seenIds.add(externalId);
-        const legacyExternalId = externalId.includes(":")
-          ? externalId.slice(externalId.lastIndexOf(":") + 1)
-          : null;
-        const existing = findExisting.get(externalId)
-          ?? (legacyExternalId ? findLegacy.get(legacyExternalId, issue.identifier) : null);
+        seenTaskIds.add(issue.id);
+        const existing = findExisting.get(issue.externalOrigin, issue.externalId);
         const labels = JSON.stringify(issue.labels);
         if (!existing) {
-          try {
-            insertTask.run(
-              issue.id,
-              issue.identifier,
-              JIRA_PROJECT_ID,
-              issue.title,
-              issue.description,
-              issue.status,
-              issue.priority,
-              labels,
-              issue.sortOrder,
-              issue.creator.type,
-              issue.creator.id,
-              issue.creator.name,
-              issue.creator.avatarUrl,
-              issue.assignee.type,
-              issue.assignee.id,
-              issue.assignee.name,
-              issue.assignee.avatarUrl,
-              issue.dueDate,
-              externalId,
-              issue.externalUrl,
-              issue.createdAt,
-              issue.updatedAt,
-            );
-          } catch (error) {
-            if (String(error.message).includes("tasks.identifier")) {
-              throw new ApiError(
-                409,
-                "JIRA_IDENTIFIER_CONFLICT",
-                `本地已存在标识为 '${issue.identifier}' 的议题，无法同步同名 Jira 任务`,
-              );
-            }
-            throw error;
-          }
+          insertTask.run(
+            issue.id,
+            issue.identifier,
+            JIRA_PROJECT_ID,
+            issue.title,
+            issue.description,
+            issue.status,
+            issue.priority,
+            labels,
+            issue.sortOrder,
+            issue.creator.type,
+            issue.creator.id,
+            issue.creator.name,
+            issue.creator.avatarUrl,
+            issue.assignee.type,
+            issue.assignee.id,
+            issue.assignee.name,
+            issue.assignee.avatarUrl,
+            issue.dueDate,
+            issue.externalOrigin,
+            issue.externalId,
+            issue.externalKey,
+            issue.externalUrl,
+            issue.createdAt,
+            issue.updatedAt,
+          );
           continue;
         }
 
@@ -931,7 +933,9 @@ export class TaskboardDatabase {
           || existing.assignee_name !== issue.assignee.name
           || existing.assignee_avatar_url !== issue.assignee.avatarUrl
           || existing.due_date !== issue.dueDate
-          || existing.external_id !== externalId
+          || existing.external_origin !== issue.externalOrigin
+          || existing.external_id !== issue.externalId
+          || existing.external_key !== issue.externalKey
           || existing.external_url !== issue.externalUrl
           || existing.archived_at !== null;
         if (!changed) continue;
@@ -952,7 +956,9 @@ export class TaskboardDatabase {
           issue.assignee.name,
           issue.assignee.avatarUrl,
           issue.dueDate,
-          externalId,
+          issue.externalOrigin,
+          issue.externalId,
+          issue.externalKey,
           issue.externalUrl,
           issue.updatedAt,
           existing.id,
@@ -960,18 +966,18 @@ export class TaskboardDatabase {
       }
 
       if (archiveMissing) {
-        const existingIds = this.database.prepare(`
-          SELECT external_id FROM tasks
+        const existingTasks = this.database.prepare(`
+          SELECT id FROM tasks
           WHERE project_id = ? AND external_source = 'jira' AND archived_at IS NULL
         `).all(JIRA_PROJECT_ID);
         const archiveTask = this.database.prepare(`
           UPDATE tasks
           SET archived_at = ?, version = version + 1, updated_at = ?
-          WHERE project_id = ? AND external_source = 'jira' AND external_id = ?
+          WHERE id = ?
         `);
-        for (const row of existingIds) {
-          if (!seenIds.has(row.external_id)) {
-            archiveTask.run(timestamp, timestamp, JIRA_PROJECT_ID, row.external_id);
+        for (const task of existingTasks) {
+          if (!seenTaskIds.has(task.id)) {
+            archiveTask.run(timestamp, timestamp, task.id);
           }
         }
       }

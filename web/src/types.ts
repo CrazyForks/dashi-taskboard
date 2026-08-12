@@ -193,6 +193,7 @@ export interface ProjectSummary {
 export interface TaskRelationSummary {
   id: string;
   identifier: string;
+  externalKey?: string | null;
   projectId: string;
   title: string;
   status: TaskStatus;
@@ -244,6 +245,8 @@ export interface Task {
   dueDate: string | null;
   recurrence: Recurrence | null;
   source: "local" | "jira";
+  externalOrigin?: string | null;
+  externalKey?: string | null;
   externalUrl: string | null;
   archivedAt: string | null;
   relations: TaskRelations;

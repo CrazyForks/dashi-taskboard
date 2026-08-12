@@ -1906,8 +1906,9 @@ export function App() {
         const previous = editor.task;
         const previousAssigneeTarget = assigneeTargetForActor(previous.assignee, currentUser);
         if (!draft.assigneeTarget || previousAssigneeTarget) {
+          const displayIdentifier = saved.externalKey ?? saved.identifier;
           pushUndo(
-            text(`${saved.identifier} 已更新。`, `${saved.identifier} was updated.`),
+            text(`${displayIdentifier} 已更新。`, `${displayIdentifier} was updated.`),
             () => restoreTaskDetails(previous, saved, previousAssigneeTarget),
           );
         }
@@ -1975,11 +1976,12 @@ export function App() {
       setTasks((current) => sortTasks(current.map((candidate) =>
         candidate.id === moved.id ? moved : candidate,
       )));
+      const displayIdentifier = task.externalKey ?? task.identifier;
       const message = task.status === status
-        ? text(`${task.identifier} 排序已调整。`, `${task.identifier} was reordered.`)
+        ? text(`${displayIdentifier} 排序已调整。`, `${displayIdentifier} was reordered.`)
         : text(
-          `${task.identifier} 已移至${taskStatusLabel(language, status)}。`,
-          `${task.identifier} was moved to ${taskStatusLabel(language, status)}.`,
+          `${displayIdentifier} 已移至${taskStatusLabel(language, status)}。`,
+          `${displayIdentifier} was moved to ${taskStatusLabel(language, status)}.`,
         );
       pushUndo(message, async () => {
         const candidate = tasksRef.current.find((current) => current.id === moved.id);
@@ -2055,8 +2057,9 @@ export function App() {
       )));
       const previousAssigneeTarget = assigneeTargetForActor(previous.assignee, currentUser);
       if (!assigneeTarget || previousAssigneeTarget) {
+        const displayIdentifier = task.externalKey ?? task.identifier;
         pushUndo(
-          text(`${task.identifier} 已更新。`, `${task.identifier} was updated.`),
+          text(`${displayIdentifier} 已更新。`, `${displayIdentifier} was updated.`),
           () => restoreTaskDetails(previous, updated, previousAssigneeTarget),
         );
       }
@@ -2352,7 +2355,10 @@ export function App() {
       setJiraDialogOpen(false);
       changeProject(connection.projectId);
       await refreshTasks(connection.projectId);
-      setAnnouncement(`已同步 ${connection.displayName ?? connection.username} 的 Jira 任务`);
+      setAnnouncement(text(
+        `已同步 ${connection.displayName ?? connection.username} 的 Jira 任务`,
+        `Synced Jira issues for ${connection.displayName ?? connection.username}`,
+      ));
     } catch (error) {
       setJiraError(errorMessage(error));
     } finally {
@@ -2371,7 +2377,7 @@ export function App() {
         refreshTasks(selectedProjectId, { quiet: true }),
         refreshProjectList(),
       ]);
-      setAnnouncement("Jira 任务已同步");
+      setAnnouncement(text("Jira 任务已同步", "Jira issues synced"));
     } catch (error) {
       setActionError(errorMessage(error));
     } finally {
@@ -2603,7 +2609,11 @@ export function App() {
                       onClick={openJiraDialog}
                     >
                       <LinearIcon className="project-avatar" name="link" />
-                      <span>{jiraConnection?.configured ? "Jira 设置" : "连接 Jira"}</span>
+                      <span>
+                        {jiraConnection?.configured
+                          ? text("Jira 设置", "Jira settings")
+                          : text("连接 Jira", "Connect Jira")}
+                      </span>
                     </button>
                     <button
                       type="button"
@@ -2639,8 +2649,8 @@ export function App() {
                 type="button"
                 disabled={jiraSyncing}
                 onClick={() => void syncJiraNow()}
-                aria-label="同步 Jira"
-                title="同步 Jira"
+                aria-label={text("同步 Jira", "Sync Jira")}
+                title={text("同步 Jira", "Sync Jira")}
               >
                 <LinearIcon name="recurrence" />
               </button>

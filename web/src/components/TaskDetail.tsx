@@ -257,9 +257,14 @@ function activityValue(
     );
   }
   if (field === "relation" && typeof value === "object") {
-    const relation = value as { type: IssueRelationType; identifier: string; title: string };
+    const relation = value as {
+      type: IssueRelationType;
+      identifier: string;
+      externalKey?: string | null;
+      title: string;
+    };
     const [chineseLabel, englishLabel] = RELATION_LABELS[relation.type];
-    return `${text(chineseLabel, englishLabel)} ${relation.identifier} · ${relation.title}`;
+    return `${text(chineseLabel, englishLabel)} ${relation.externalKey ?? relation.identifier} · ${relation.title}`;
   }
   if (Array.isArray(value)) return value.join(language === "zh" ? "、" : ", ");
   if (typeof value === "object") return JSON.stringify(value);
@@ -398,6 +403,7 @@ export function TaskDetail({
   const draft = serializeInlineMedia(commentSegments);
   const commentInlineImages = inlineMediaImages(commentSegments);
   const editingDraft = serializeInlineMedia(editingSegments);
+  const displayIdentifier = currentTask.externalKey ?? currentTask.identifier;
   const editingInlineImages = inlineMediaImages(editingSegments);
 
   useEffect(() => {
@@ -823,7 +829,7 @@ export function TaskDetail({
   return (
     <section
       className="issue-detail"
-      aria-label={text(`${task.identifier} 议题详情`, `${task.identifier} issue details`)}
+      aria-label={text(`${displayIdentifier} 议题详情`, `${displayIdentifier} issue details`)}
     >
       <div className="issue-detail-scroll">
         <div className="issue-detail-layout">
@@ -1382,24 +1388,24 @@ export function TaskDetail({
                   <span className="detail-copy-action-icon" aria-hidden="true">
                     <LinearIcon name="openExternal" />
                   </span>
-                  <span className="detail-copy-action-label">打开 Jira</span>
+                  <span className="detail-copy-action-label">{text("打开 Jira", "Open Jira")}</span>
                 </a>
               )}
               <button
                 className="detail-copy-action"
                 type="button"
                 title={text(
-                  `复制议题 ID ${currentTask.identifier}`,
-                  `Copy issue ID ${currentTask.identifier}`,
+                  `复制议题 ID ${displayIdentifier}`,
+                  `Copy issue ID ${displayIdentifier}`,
                 )}
                 onClick={() => onCopy(
-                  currentTask.identifier,
-                  text(`${currentTask.identifier} 已复制。`, `${currentTask.identifier} copied.`),
+                  displayIdentifier,
+                  text(`${displayIdentifier} 已复制。`, `${displayIdentifier} copied.`),
                 )}
               >
                 <span className="detail-copy-action-icon" aria-hidden="true"><img src={copyIdIcon} alt="" /></span>
                 <span className="detail-copy-action-label">{text("复制 ID", "Copy ID")}</span>
-                <span className="detail-copy-identifier">{currentTask.identifier}</span>
+                <span className="detail-copy-identifier">{displayIdentifier}</span>
               </button>
               <button
                 className="detail-copy-action"
@@ -1468,7 +1474,7 @@ export function TaskDetail({
                   icon: <ActorAvatar actor={actor} className="task-property-assignee-avatar" />,
                 }))}
                 open={propertyMenu === "assignee"}
-                disabled={savingProperty === "assignee"}
+                disabled={currentTask.source === "jira" || savingProperty === "assignee"}
                 className="detail-property-picker"
                 triggerClassName="detail-property-trigger"
                 ariaLabel={text("负责人", "Assignee")}

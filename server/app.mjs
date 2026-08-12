@@ -1857,7 +1857,13 @@ export function createTaskboardServer(options = {}) {
           assertAllowedKeys(body, new Set(["baseUrl", "username", "password", "projects"]));
           const baseUrl = stringField(body.baseUrl, "baseUrl", { required: true, maxLength: 2048 });
           const username = stringField(body.username ?? "", "username", { maxLength: 254 });
-          const password = stringField(body.password ?? "", "password", { maxLength: 4096 });
+          const password = body.password ?? "";
+          if (typeof password !== "string") {
+            throw new ApiError(400, "INVALID_FIELD", "'password' must be a string");
+          }
+          if (password.length > 4096) {
+            throw new ApiError(400, "INVALID_FIELD", "'password' cannot exceed 4096 characters");
+          }
           try {
             const connection = await jira.configure({
               baseUrl,
@@ -2551,12 +2557,22 @@ export function createTaskboardServer(options = {}) {
           const { version, changes, threadId, assigneeTarget } = parseTaskPatch(await readJson(request));
           const current = database.getTask(id);
           if (!current) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${id}' does not exist`);
+          if (current.source !== "jira" && changes.projectId === JIRA_PROJECT_ID) {
+            throw new ApiError(
+              409,
+              "JIRA_PROJECT_MOVE_UNAVAILABLE",
+              "本地任务不能移入 Jira 同步项目",
+            );
+          }
           if (current.source === "jira") {
             if (current.version !== version) {
               throw new ApiError(409, "VERSION_CONFLICT", "Task changed since it was last read", {
                 expectedVersion: version,
                 actualVersion: current.version,
               });
+            }
+            if (current.archivedAt !== null) {
+              throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be updated");
             }
             if (Object.hasOwn(changes, "projectId")) {
               throw new ApiError(409, "JIRA_PROJECT_MOVE_UNAVAILABLE", "Jira 任务不能移到本地项目");
@@ -2600,6 +2616,9 @@ export function createTaskboardServer(options = {}) {
                 expectedVersion: move.version,
                 actualVersion: current.version,
               });
+            }
+            if (current.archivedAt !== null) {
+              throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be moved");
             }
             await jira.moveTask(current, move.status);
           }
