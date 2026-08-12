@@ -14,8 +14,10 @@ test("the macOS launcher uses one instance, serialized lifecycle changes, and a 
   assert.match(launcherSource, /TcpListener::bind\(\("127\.0\.0\.1", 0\)\)/);
   assert.equal(launcherSource.match(/TcpListener::bind/g)?.length, 1);
   assert.match(launcherSource, /codex_port: Mutex<Option<u16>>/);
-  assert.match(launcherSource, /"--port", &codex_port/);
-  assert.doesNotMatch(launcherSource, /"--cdp-pipe"/);
+  assert.match(
+    launcherSource,
+    /#\[cfg\(target_os = "macos"\)\]\s+command\.args\(\["--launch", "--watch", "--open", "--port", &codex_port\]\);/,
+  );
   assert.doesNotMatch(launcherSource, /const LAUNCHER_PORT/);
 });
 
