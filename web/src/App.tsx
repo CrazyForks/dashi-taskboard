@@ -1468,12 +1468,13 @@ export function App() {
       current?.operation === "initial" ? { ...current, requestId } : current
     ));
     try {
-      const [nextProjects, metadata, workspaces, nextJiraConnection] = await Promise.all([
+      const [nextProjects, metadata, workspaces] = await Promise.all([
         listProjects(signal),
         getTaskboardMetadata(signal),
         listDeviceWorkspaces(signal),
-        getJiraConnection(signal),
       ]);
+      if (requestId !== projectsRequestRef.current) return;
+      const nextJiraConnection = await getJiraConnection(signal);
       if (requestId !== projectsRequestRef.current) return;
       setTaskboardMetadata((current) => (
         current
