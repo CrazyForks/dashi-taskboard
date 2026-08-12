@@ -261,14 +261,16 @@ jobs:
           RELEASE_ASSETS="$RUNNER_TEMP/release-assets"
           MANIFEST_ROOT="$RUNNER_TEMP/release-manifest"
           mkdir -p "$RELEASE_ASSETS" "$MANIFEST_ROOT"
-          cp "$BUNDLE_ROOT/dmg/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg" "$RELEASE_ASSETS/"
+          cp \
+            "$BUNDLE_ROOT/dmg/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg" \
+            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_macOS-universal.dmg"
           cp "$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" "$RELEASE_ASSETS/"
           cp "$BUNDLE_ROOT/release/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" "$RELEASE_ASSETS/"
           cp "$BUNDLE_ROOT/release/latest.json" "$RELEASE_ASSETS/"
           (
             cd "$RELEASE_ASSETS"
             shasum -a 256 \
-              "Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg" \
+              "Codex.Taskboard_${PACKAGE_VERSION}_macOS-universal.dmg" \
               "Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
               "Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" \
               "latest.json" > "$MANIFEST_ROOT/release-assets.sha256"
@@ -293,10 +295,8 @@ jobs:
             --target "$GITHUB_SHA" \
             --draft \
             --title "Codex Taskboard $RELEASE_TAG" \
-            --notes "Codex Taskboard 将任务看板直接集成到 Codex，支持任务创建、状态管理、会话关联、Worktree 开发协作和进度追踪。
-
-          本版本优化了任务搜索、Dashboard 展示、详情页浏览位置与链接复制，并改善了 Codex 内置浏览器登录状态和 macOS 状态栏图标。" \
-            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg" \
+            --generate-notes \
+            "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_macOS-universal.dmg" \
             "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz" \
             "$RELEASE_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.app.tar.gz.sig" \
             "$RELEASE_ASSETS/latest.json"
@@ -467,7 +467,7 @@ jobs:
             -C "$UPDATER_ROOT"
           npm run app:verify-release -- \
             "$UPDATER_ROOT/Codex Taskboard.app" \
-            "$DRAFT_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_universal.dmg" \
+            "$DRAFT_ASSETS/Codex.Taskboard_${PACKAGE_VERSION}_macOS-universal.dmg" \
             "$DRAFT_ASSETS" \
             "$RELEASE_TAG"
 
