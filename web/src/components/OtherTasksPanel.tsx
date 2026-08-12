@@ -38,10 +38,11 @@ function ArchivedTaskCard({
   onDelete,
 }: ArchivedTaskCardProps) {
   const { language, locale, text } = useTaskboardI18n();
+  const displayIdentifier = task.externalKey ?? task.identifier;
   return (
     <article className={`task-card task-card-sidebar archived-task-card status-${task.status}`}>
       <div className="card-topline">
-        <span className="task-identifier">ID: {task.identifier}</span>
+        <span className="task-identifier">ID: {displayIdentifier}</span>
         <span className="archived-task-date">{archivedDate(task.archivedAt, locale, text)}</span>
       </div>
       <h3>{task.title}</h3>
@@ -50,25 +51,29 @@ function ArchivedTaskCard({
           <LinearStatusIcon status={task.status} />
           {taskStatusLabel(language, task.status)}
         </span>
-        <button
-          className="archived-task-action archived-task-restore"
-          type="button"
-          disabled={busy}
-          onClick={() => onRestore(task)}
-        >
-          <LinearIcon name="recurrence" />
-          {restoring ? text("恢复中…", "Restoring…") : text("恢复", "Restore")}
-        </button>
-        <button
-          className="archived-task-action archived-task-delete"
-          type="button"
-          aria-label={text(`永久删除 ${task.identifier}`, `Permanently delete ${task.identifier}`)}
-          title={text("永久删除", "Delete permanently")}
-          disabled={busy}
-          onClick={() => onDelete(task)}
-        >
-          <LinearIcon name="trash" />
-        </button>
+        {task.source !== "jira" && (
+          <>
+            <button
+              className="archived-task-action archived-task-restore"
+              type="button"
+              disabled={busy}
+              onClick={() => onRestore(task)}
+            >
+              <LinearIcon name="recurrence" />
+              {restoring ? text("恢复中…", "Restoring…") : text("恢复", "Restore")}
+            </button>
+            <button
+              className="archived-task-action archived-task-delete"
+              type="button"
+              aria-label={text(`永久删除 ${displayIdentifier}`, `Permanently delete ${displayIdentifier}`)}
+              title={text("永久删除", "Delete permanently")}
+              disabled={busy}
+              onClick={() => onDelete(task)}
+            >
+              <LinearIcon name="trash" />
+            </button>
+          </>
+        )}
       </div>
     </article>
   );
@@ -94,7 +99,7 @@ interface OtherTasksPanelProps {
   restoringTaskId: string | null;
   deletingTaskId: string | null;
   onTabChange: (tab: OtherTaskTab) => void;
-  onCreate: (status: Exclude<OtherTaskTab, "archived">) => void;
+  onCreate?: (status: Exclude<OtherTaskTab, "archived">) => void;
   onRestore: (task: Task) => void;
   onDelete: (task: Task) => void;
   onEdit: (task: Task) => void;
@@ -223,7 +228,7 @@ export function OtherTasksPanel({
         })}
       </div>
 
-      {!archived && (
+      {!archived && onCreate && (
         <button
           className="other-tasks-add"
           type="button"

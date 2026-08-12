@@ -60,7 +60,7 @@ function IssuePicker({
     const normalized = query.trim().toLocaleLowerCase();
     if (!normalized) return candidates;
     return candidates.filter((task) => (
-      task.identifier.toLocaleLowerCase().includes(normalized)
+      (task.externalKey ?? task.identifier).toLocaleLowerCase().includes(normalized)
       || task.title.toLocaleLowerCase().includes(normalized)
     ));
   }, [candidates, query]);
@@ -148,7 +148,7 @@ function IssuePicker({
                 onClick={() => void choose(candidate)}
               >
                 <StatusIcon status={candidate.status} />
-                <span className="issue-relation-option-id">{candidate.identifier}</span>
+                <span className="issue-relation-option-id">{candidate.externalKey ?? candidate.identifier}</span>
                 <span className="issue-relation-option-title">{candidate.title}</span>
               </button>
             )) : (
@@ -193,14 +193,17 @@ function IssueRelationRow({
     <div className="issue-relation-row">
       <button className="issue-relation-target" type="button" onClick={onOpen}>
         <StatusIcon status={issue.status} />
-        <span className="issue-relation-id">{issue.identifier}</span>
+        <span className="issue-relation-id">{issue.externalKey ?? issue.identifier}</span>
         <span className="issue-relation-title">{issue.title}</span>
         {showAssignee && <ActorAvatar actor={issue.assignee} className="issue-relation-assignee" />}
       </button>
       <button
         className="issue-relation-remove"
         type="button"
-        aria-label={text(`移除 ${issue.identifier}`, `Remove ${issue.identifier}`)}
+        aria-label={text(
+          `移除 ${issue.externalKey ?? issue.identifier}`,
+          `Remove ${issue.externalKey ?? issue.identifier}`,
+        )}
         disabled={removing}
         onClick={onRemove}
       >
