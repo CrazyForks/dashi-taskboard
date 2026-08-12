@@ -95,6 +95,7 @@ interface OtherTasksPanelProps {
   contextMenuTaskId: string | null;
   availableLabels: string[];
   currentUser: ActorIdentity;
+  onCreateLabel: (label: string) => Promise<void>;
   restoringTaskId: string | null;
   deletingTaskId: string | null;
   onTabChange: (tab: OtherTaskTab) => void;
@@ -127,6 +128,7 @@ export function OtherTasksPanel({
   contextMenuTaskId,
   availableLabels,
   currentUser,
+  onCreateLabel,
   restoringTaskId,
   deletingTaskId,
   onTabChange,
@@ -285,6 +287,7 @@ export function OtherTasksPanel({
               isContextMenuOpen={contextMenuTaskId === task.id}
               availableLabels={availableLabels}
               currentUser={currentUser}
+              onCreateLabel={onCreateLabel}
               onEdit={onEdit}
               onUpdate={onUpdate}
               onContextMenu={onContextMenu}

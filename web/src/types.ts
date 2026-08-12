@@ -177,6 +177,7 @@ export interface Project {
   name: string;
   workspacePath: string | null;
   source: "local" | "jira";
+  labels: string[];
   issueCount: number;
   createdAt: string;
   updatedAt: string;

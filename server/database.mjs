@@ -3,7 +3,9 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { JIRA_PROJECT_ID } from "../shared/domain.mjs";
+import { DEFAULT_LABEL_NAMES, JIRA_PROJECT_ID } from "../shared/domain.mjs";
+
+const DEFAULT_PROJECT_LABELS_JSON = JSON.stringify(DEFAULT_LABEL_NAMES);
 
 export class ApiError extends Error {
   constructor(status, code, message, details) {
@@ -257,6 +259,7 @@ function projectFromRow(row) {
     name: row.name,
     workspacePath: row.workspace_path,
     source: row.id === JIRA_PROJECT_ID ? "jira" : "local",
+    labels: JSON.parse(row.labels),
     issueCount: Number(row.issue_count ?? 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -350,6 +353,7 @@ export class TaskboardDatabase {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         workspace_path TEXT,
+        labels TEXT NOT NULL DEFAULT '${DEFAULT_PROJECT_LABELS_JSON}',
         next_task_number INTEGER NOT NULL DEFAULT 1 CHECK (next_task_number > 0),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -616,6 +620,41 @@ export class TaskboardDatabase {
         throw error;
       }
     }
+    if (!projectColumns.some((column) => column.name === "labels")) {
+      this.database.exec("BEGIN IMMEDIATE");
+      try {
+        this.database.exec(`
+          ALTER TABLE projects
+          ADD COLUMN labels TEXT NOT NULL DEFAULT '${DEFAULT_PROJECT_LABELS_JSON}'
+        `);
+        const labelsByProject = new Map(
+          this.database.prepare("SELECT id FROM projects").all().map((project) => (
+            [project.id, [...DEFAULT_LABEL_NAMES]]
+          )),
+        );
+        for (const task of this.database.prepare(`
+          SELECT project_id, labels
+          FROM tasks
+          ORDER BY created_at, id
+        `).all()) {
+          const projectLabels = labelsByProject.get(task.project_id);
+          if (!projectLabels) continue;
+          for (const label of JSON.parse(task.labels)) {
+            if (!projectLabels.includes(label)) projectLabels.push(label);
+          }
+        }
+        const updateProjectLabels = this.database.prepare(`
+          UPDATE projects SET labels = ? WHERE id = ?
+        `);
+        for (const [projectId, labels] of labelsByProject) {
+          updateProjectLabels.run(JSON.stringify(labels), projectId);
+        }
+        this.database.exec("COMMIT");
+      } catch (error) {
+        this.database.exec("ROLLBACK");
+        throw error;
+      }
+    }
     this.database.exec(`
       CREATE INDEX IF NOT EXISTS tasks_project_status_sort
         ON tasks(project_id, archived_at, status, sort_order, created_at)
@@ -784,6 +823,7 @@ export class TaskboardDatabase {
         projects.id,
         projects.name,
         projects.workspace_path,
+        projects.labels,
         projects.created_at,
         projects.updated_at,
         COUNT(tasks.id) AS issue_count
@@ -795,6 +835,7 @@ export class TaskboardDatabase {
         projects.id,
         projects.name,
         projects.workspace_path,
+        projects.labels,
         projects.created_at,
         projects.updated_at
       ORDER BY projects.created_at, projects.id
@@ -805,9 +846,17 @@ export class TaskboardDatabase {
     const timestamp = now();
     try {
       this.database.prepare(`
-        INSERT INTO projects (id, name, workspace_path, next_task_number, created_at, updated_at)
-        VALUES (?, ?, ?, 1, ?, ?)
-      `).run(input.id, input.name, input.workspacePath, timestamp, timestamp);
+        INSERT INTO projects (
+          id, name, workspace_path, labels, next_task_number, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 1, ?, ?)
+      `).run(
+        input.id,
+        input.name,
+        input.workspacePath,
+        DEFAULT_PROJECT_LABELS_JSON,
+        timestamp,
+        timestamp,
+      );
     } catch (error) {
       if (String(error.message).includes("UNIQUE constraint failed")) {
         throw new ApiError(409, "PROJECT_EXISTS", `Project '${input.id}' already exists`);
@@ -1018,6 +1067,7 @@ export class TaskboardDatabase {
         projects.id,
         projects.name,
         projects.workspace_path,
+        projects.labels,
         projects.created_at,
         projects.updated_at,
         COUNT(tasks.id) AS issue_count
@@ -1030,10 +1080,64 @@ export class TaskboardDatabase {
         projects.id,
         projects.name,
         projects.workspace_path,
+        projects.labels,
         projects.created_at,
         projects.updated_at
     `).get(id);
     return row ? projectFromRow(row) : null;
+  }
+
+  addProjectLabel(projectId, label) {
+    const project = this.database.prepare("SELECT labels FROM projects WHERE id = ?").get(projectId);
+    if (!project) {
+      throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${projectId}' does not exist`);
+    }
+    const labels = JSON.parse(project.labels);
+    if (!labels.includes(label)) {
+      this.database.prepare(`
+        UPDATE projects SET labels = ?, updated_at = ? WHERE id = ?
+      `).run(JSON.stringify([...labels, label]), now(), projectId);
+    }
+    return this.getProject(projectId);
+  }
+
+  deleteProjectLabel(projectId, label) {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const project = this.database.prepare("SELECT labels FROM projects WHERE id = ?").get(projectId);
+      if (!project) {
+        throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${projectId}' does not exist`);
+      }
+      const timestamp = now();
+      const labels = JSON.parse(project.labels);
+      if (labels.includes(label)) {
+        this.database.prepare(`
+          UPDATE projects SET labels = ?, updated_at = ? WHERE id = ?
+        `).run(JSON.stringify(labels.filter((current) => current !== label)), timestamp, projectId);
+      }
+      const updateTask = this.database.prepare(`
+        UPDATE tasks
+        SET labels = ?, version = version + 1, updated_at = ?
+        WHERE id = ?
+      `);
+      for (const task of this.database.prepare(`
+        SELECT id, labels FROM tasks WHERE project_id = ?
+      `).all(projectId)) {
+        const taskLabels = JSON.parse(task.labels);
+        if (taskLabels.includes(label)) {
+          updateTask.run(
+            JSON.stringify(taskLabels.filter((current) => current !== label)),
+            timestamp,
+            task.id,
+          );
+        }
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    return this.getProject(projectId);
   }
 
   getProjectSummary(projectId) {
@@ -1475,6 +1579,7 @@ export class TaskboardDatabase {
       const project = this.database.prepare(`
         SELECT
           projects.id,
+          projects.labels,
           projects.next_task_number,
           (
             SELECT tasks.identifier
@@ -1513,8 +1618,13 @@ export class TaskboardDatabase {
       }
 
       this.database.prepare(`
-        UPDATE projects SET next_task_number = ?, updated_at = ? WHERE id = ?
-      `).run(number + 1, timestamp, input.projectId);
+        UPDATE projects SET next_task_number = ?, labels = ?, updated_at = ? WHERE id = ?
+      `).run(
+        number + 1,
+        JSON.stringify([...new Set([...JSON.parse(project.labels), ...input.labels])]),
+        timestamp,
+        input.projectId,
+      );
       this.database.prepare(`
         INSERT INTO tasks (
           id, identifier, project_id, title, description, status, priority, labels,
@@ -1567,7 +1677,7 @@ export class TaskboardDatabase {
     this.#requireVersion(current, version);
     const activityChanges = taskFieldChanges(current, changes);
     const targetProject = Object.hasOwn(changes, "projectId")
-      ? this.database.prepare("SELECT id, name, workspace_path FROM projects WHERE id = ?").get(changes.projectId)
+      ? this.database.prepare("SELECT id, name, workspace_path, labels FROM projects WHERE id = ?").get(changes.projectId)
       : null;
     if (Object.hasOwn(changes, "projectId") && !targetProject) {
       throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${changes.projectId}' does not exist`);
@@ -1672,6 +1782,18 @@ export class TaskboardDatabase {
         this.database.prepare(`
           UPDATE projects SET updated_at = ? WHERE id IN (?, ?)
         `).run(timestamp, current.projectId, targetProject.id);
+      }
+      const destinationProjectId = projectChanged ? targetProject.id : current.projectId;
+      const destinationProject = this.database.prepare(`
+        SELECT labels FROM projects WHERE id = ?
+      `).get(destinationProjectId);
+      const taskLabels = Object.hasOwn(changes, "labels") ? changes.labels : current.labels;
+      const projectLabels = JSON.parse(destinationProject.labels);
+      const mergedLabels = [...new Set([...projectLabels, ...taskLabels])];
+      if (mergedLabels.length !== projectLabels.length) {
+        this.database.prepare(`
+          UPDATE projects SET labels = ?, updated_at = ? WHERE id = ?
+        `).run(JSON.stringify(mergedLabels), timestamp, destinationProjectId);
       }
       this.#recordTaskActivity(current.id, actor, activityChanges, timestamp);
       this.database.exec("COMMIT");
